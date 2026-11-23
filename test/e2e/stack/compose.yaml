@@ -1,0 +1,59 @@
+name: etrace-e2e
+
+x-etrace: &etrace
+  image: docker.1ms.run/library/debian:trixie
+  volumes:
+    - ../../../bin/etrace-linux-${HOST_ARCH:-arm64}:/usr/local/bin/etrace:ro
+    - .:/etc/etrace:ro
+  restart: on-failure
+
+services:
+  clickhouse:
+    image: docker.1ms.run/clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_USER: etrace
+      CLICKHOUSE_PASSWORD: etrace
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "etrace", "--password", "etrace", "-q", "SELECT 1"]
+      interval: 2s
+      retries: 30
+
+  jaeger:
+    image: docker.1ms.run/jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686"]
+
+  collector:
+    <<: *etrace
+    command: ["etrace", "collector", "-config", "/etc/etrace/collector.yaml"]
+    depends_on:
+      clickhouse: {condition: service_healthy}
+
+  query:
+    <<: *etrace
+    command: ["etrace", "query", "-config", "/etc/etrace/query.yaml"]
+    ports: ["18080:8080"]
+    depends_on: [collector, jaeger]
+
+  agent:
+    <<: *etrace
+    command: ["etrace", "agent", "-config", "/etc/etrace/agent.yaml"]
+    privileged: true
+    pid: host
+    depends_on: [collector]
+
+  app:
+    image: etrace-py-otel
+    # The library is copied onto the container filesystem: uprobes cannot
+    # attach to files bind-mounted from a macOS host.
+    command: ["sh", "-c", "mkdir -p /opt/etrace && cp /mnt/etrace/libetrace_ctx.so /opt/etrace/ && exec python -u /app/app.py"]
+    environment:
+      OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+      ETRACE_CTX_LIBRARY: /opt/etrace/libetrace_ctx.so
+      PYTHONPATH: /opt/etrace/python
+    volumes:
+      - ./app.py:/app/app.py:ro
+      - ../../../test/scenario/libetrace_ctx.so:/mnt/etrace/libetrace_ctx.so:ro
+      - ../../../sdk/python:/opt/etrace/python:ro
+    depends_on: [agent, jaeger]

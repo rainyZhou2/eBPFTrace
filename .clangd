@@ -1,0 +1,19 @@
+# C++ sources use the compilation database copied out of the build volume;
+# run `make build ide` so clangd finds it and the vcpkg and protobuf headers.
+CompileFlags:
+  CompilationDatabase: build/ide
+  Add:
+    - -idirafter../bpf-include
+---
+# BPF sources are compiled for the BPF target with Linux headers; run
+# `make bpf-ide-headers` once so clangd finds them on non-Linux hosts.
+If:
+  PathMatch: src/agent/source/.*/bpf/.*\.bpf\.c
+CompileFlags:
+  Compiler: clang
+  Add:
+    - --target=bpf
+    - -xc
+    - -D__TARGET_ARCH_arm64
+    - -DETRACE_DWARF_UNWIND
+    - -I../../../../../build/bpf-include

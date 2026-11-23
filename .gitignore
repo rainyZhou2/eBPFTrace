@@ -1,0 +1,46 @@
+# Build output
+bin/
+*.bpf.o
+test/scenario/*-arm64
+test/scenario/*-amd64
+test/scenario/gpu-*
+test/scenario/libcuda.so*
+test/scenario/libcudart.so*
+test/scenario/libnccl.so*
+test/scenario/*.so
+sdk/c/*.so
+
+# Headers and compilation database copied out of the builder for clangd
+# (make bpf-ide-headers, make ide)
+build/bpf-include/
+build/ide/
+.cache/
+
+# Python SDK
+__pycache__/
+*.pyc
+*.egg-info/
+sdk/python/build/
+sdk/python/dist/
+sdk/python/.venv/
+sdk/python/.pytest_cache/
+
+# etrace doctor output
+etrace-report*.html
+*.pprof
+profiles/
+
+# Go-era backup and other local archives
+*.tar.gz
+*.tgz
+
+# Research notes stay local
+research/
+
+# Local agent instructions
+C++AGENTS.md
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,125 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etrace-collector
+  namespace: etrace
+data:
+  collector.yaml: |
+    admin:
+      listen: ":9432"
+    grpc:
+      listen: ":4317"
+      max_connection_age: 5m
+    tokens: ["${ETRACE_INGEST_TOKEN}"]
+    storage:
+      driver: clickhouse
+      options:
+        addrs: ["${CLICKHOUSE_ADDR}"]
+        cluster: ${CLICKHOUSE_CLUSTER}
+        username: ${CLICKHOUSE_USER}
+        password: ${CLICKHOUSE_PASSWORD}
+        ttl_days: 7
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etrace-collector
+  namespace: etrace
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: etrace-collector}
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels: {app: etrace-collector}
+    spec:
+      terminationGracePeriodSeconds: 30
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: etrace-collector}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {app: etrace-collector}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: collector
+          image: etrace:latest
+          args: ["collector", "-config", "/etc/etrace/collector.yaml"]
+          ports:
+            - {name: grpc, containerPort: 4317}
+            - {name: admin, containerPort: 9432}
+          env:
+            - {name: CLICKHOUSE_ADDR, value: "clickhouse.etrace.svc:9000"}
+            - {name: CLICKHOUSE_CLUSTER, value: ""}
+            - name: ETRACE_INGEST_TOKEN
+              valueFrom: {secretKeyRef: {name: etrace-secrets, key: ingest-token}}
+            - name: CLICKHOUSE_USER
+              valueFrom: {secretKeyRef: {name: etrace-secrets, key: clickhouse-user}}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: {secretKeyRef: {name: etrace-secrets, key: clickhouse-password}}
+          readinessProbe:
+            httpGet: {path: /readyz, port: admin}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: admin}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {memory: 2Gi}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/etrace}
+      volumes:
+        - name: config
+          configMap: {name: etrace-collector}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etrace-collector-headless
+  namespace: etrace
+spec:
+  clusterIP: None
+  selector: {app: etrace-collector}
+  ports:
+    - {name: grpc, port: 4317, targetPort: grpc}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: etrace-collector
+  namespace: etrace
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: etrace-collector}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: etrace-collector
+  namespace: etrace
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: etrace-collector}
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}

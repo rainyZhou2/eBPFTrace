@@ -1,0 +1,14 @@
+log: {level: info, format: text}
+admin: {listen: ":9433"}
+http: {listen: ":8080"}
+storage:
+  driver: clickhouse
+  options:
+    addrs: ["clickhouse:9000"]
+    username: etrace
+    password: etrace
+    auto_migrate: false
+trace_backend:
+  driver: jaeger
+  options:
+    url: http://jaeger:16686

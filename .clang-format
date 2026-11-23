@@ -1,0 +1,13 @@
+BasedOnStyle: Google
+IndentWidth: 8
+TabWidth: 8
+UseTab: ForIndentation
+ColumnLimit: 120
+AccessModifierOffset: -8
+ContinuationIndentWidth: 8
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Preserve

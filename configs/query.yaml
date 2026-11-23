@@ -1,0 +1,27 @@
+log:
+  level: info
+  format: json
+admin:
+  listen: ":9433"
+http:
+  listen: ":8080"
+max_range: 168h
+trace_lookback: 24h
+max_chain_depth: 4
+max_events: 5000
+storage:
+  driver: clickhouse
+  options:
+    addrs: ["${CLICKHOUSE_ADDR}"]
+    database: etrace
+    samples_table: offcpu_samples
+    events_table: offcpu_events
+    cluster: ${CLICKHOUSE_CLUSTER}
+    username: ${CLICKHOUSE_USER}
+    password: ${CLICKHOUSE_PASSWORD}
+    auto_migrate: false
+trace_backend:
+  driver: jaeger
+  options:
+    url: ${JAEGER_QUERY_URL}
+    timeout: 5s

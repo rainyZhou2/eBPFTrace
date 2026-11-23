@@ -1,0 +1,25 @@
+node: e2e-node
+proc_root: /proc
+interval: 2s
+log: {level: info, format: text}
+admin: {listen: ":9431"}
+spool: {dir: /tmp/etrace-spool, max_bytes: 104857600}
+sources:
+  - driver: offcpu
+    options:
+      min_block: 1ms
+      chain_depth: 4
+      slow_event: 200ms
+      trace_context:
+        enabled: true
+        library_patterns: ["libetrace_ctx"]
+        symbol: etrace_register_tls
+        scan_interval: 2s
+processors:
+  - driver: container
+  - driver: symbolize
+exporter:
+  driver: grpc
+  options:
+    target: dns:///collector:4317
+    token: e2e-token

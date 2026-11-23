@@ -1,0 +1,101 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etrace-query
+  namespace: etrace
+data:
+  query.yaml: |
+    admin:
+      listen: ":9433"
+    http:
+      listen: ":8080"
+    storage:
+      driver: clickhouse
+      options:
+        addrs: ["${CLICKHOUSE_ADDR}"]
+        cluster: ${CLICKHOUSE_CLUSTER}
+        username: ${CLICKHOUSE_USER}
+        password: ${CLICKHOUSE_PASSWORD}
+        auto_migrate: false
+    trace_backend:
+      driver: jaeger
+      options:
+        url: ${JAEGER_QUERY_URL}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etrace-query
+  namespace: etrace
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: etrace-query}
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels: {app: etrace-query}
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {app: etrace-query}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: query
+          image: etrace:latest
+          args: ["query", "-config", "/etc/etrace/query.yaml"]
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: admin, containerPort: 9433}
+          env:
+            - {name: CLICKHOUSE_ADDR, value: "clickhouse.etrace.svc:9000"}
+            - {name: CLICKHOUSE_CLUSTER, value: ""}
+            - {name: JAEGER_QUERY_URL, value: "http://jaeger-query.observability.svc:16686"}
+            - name: CLICKHOUSE_USER
+              valueFrom: {secretKeyRef: {name: etrace-secrets, key: clickhouse-user}}
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: {secretKeyRef: {name: etrace-secrets, key: clickhouse-password}}
+          readinessProbe:
+            httpGet: {path: /readyz, port: admin}
+          livenessProbe:
+            httpGet: {path: /healthz, port: admin}
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/etrace}
+      volumes:
+        - name: config
+          configMap: {name: etrace-query}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: etrace-query
+  namespace: etrace
+spec:
+  selector: {app: etrace-query}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: etrace-query
+  namespace: etrace
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: etrace-query}

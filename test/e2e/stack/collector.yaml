@@ -1,0 +1,11 @@
+log: {level: info, format: text}
+admin: {listen: ":9432"}
+grpc: {listen: ":4317"}
+tokens: [e2e-token]
+storage:
+  driver: clickhouse
+  options:
+    addrs: ["clickhouse:9000"]
+    username: etrace
+    password: etrace
+    ttl_days: 1

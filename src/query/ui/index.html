@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eTrace</title>
+<link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+<header>
+  <span class="brand">eTrace</span>
+  <nav id="tabs">
+    <button data-tab="flame" class="active">Flame graph</button>
+    <button data-tab="causes">Causes</button>
+    <button data-tab="events">Events</button>
+    <button data-tab="trace">Trace</button>
+  </nav>
+</header>
+
+<form id="filters" autocomplete="off">
+  <label>Range
+    <select name="range">
+      <option value="15m">last 15 min</option>
+      <option value="1h">last 1 h</option>
+      <option value="6h">last 6 h</option>
+      <option value="24h">last 24 h</option>
+      <option value="custom">custom</option>
+    </select>
+  </label>
+  <label class="custom">From <input type="datetime-local" name="from"></label>
+  <label class="custom">To <input type="datetime-local" name="to"></label>
+  <label>Node <input name="node" size="12"></label>
+  <label>Namespace <input name="namespace" size="10"></label>
+  <label>Pod <input name="pod" size="14"></label>
+  <label>Comm <input name="comm" size="10"></label>
+  <label>PID <input name="pid" size="6" inputmode="numeric"></label>
+  <label>Hops
+    <select name="depth"><option>0</option><option>1</option><option>2</option><option>3</option><option selected>4</option></select>
+  </label>
+  <label class="events-only">Min wait <input name="min_duration" size="6" placeholder="50ms"></label>
+  <button type="submit">Apply</button>
+</form>
+
+<main>
+  <section id="flame" class="tab active">
+    <div class="toolbar">
+      <input id="flame-search" placeholder="highlight frames matching…" size="30">
+      <span id="flame-info" class="meta"></span>
+      <span class="spacer"></span>
+      <a id="dl-pprof">pprof</a> <a id="dl-collapsed">collapsed</a>
+    </div>
+    <div id="flame-graph"></div>
+  </section>
+
+  <section id="causes" class="tab">
+    <p class="meta">Blocking time per wait path. The root cause is the deepest hop whose own wait explains the delay.</p>
+    <table><thead><tr><th>wait path</th><th>blocked in</th><th>root cause</th><th class="num">total</th><th class="num">count</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="events" class="tab">
+    <p class="meta">Single waits that carried a trace context or exceeded the agent's slow threshold. Click a row for its stacks.</p>
+    <table><thead><tr><th>start</th><th class="num">duration</th><th>thread</th><th>pod</th><th>woken by</th><th>trace</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="trace" class="tab">
+    <div class="toolbar"><input id="trace-id" placeholder="trace id (32 hex)" size="36"> <button id="trace-go">Show</button> <span id="trace-note" class="meta"></span></div>
+    <table><thead><tr><th>span</th><th>service</th><th class="num">duration</th><th class="num">off-CPU</th><th class="num">self off-CPU</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <div id="error" hidden></div>
+  <dialog id="detail"><button class="close" type="button">close</button><pre></pre></dialog>
+</main>
+<script src="/ui/app.js"></script>
+</body>
+</html>

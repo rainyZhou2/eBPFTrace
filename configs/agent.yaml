@@ -1,0 +1,68 @@
+node: ${NODE_NAME}
+labels:
+  cluster: ${CLUSTER_NAME}
+proc_root: /host/proc
+interval: 10s
+log:
+  level: info
+  format: json
+admin:
+  listen: ":9431"
+spool:
+  dir: /var/lib/etrace/spool
+  max_bytes: 536870912
+retry:
+  initial: 200ms
+  max: 30s
+  multiplier: 2
+  jitter: 0.2
+sources:
+  - driver: offcpu
+    options:
+      min_block: 1ms
+      user_stacks: true
+      include_preempted: false
+      chain_depth: 4
+      slow_event: 50ms
+      max_events_per_interval: 20000
+      trace_context:
+        enabled: true
+        library_patterns: ["libetrace_ctx"]
+        symbol: etrace_register_tls
+        scan_interval: 10s
+      unwind:
+        mode: auto
+        max_rows: 1048576
+        max_processes: 4096
+        refresh_interval: 1s
+      gpu:
+        enabled: true
+        library_patterns: ["libcuda.so", "libcudart.so", "libnccl.so"]
+        min_wait: 1ms
+        scan_interval: 10s
+        launches: true
+        max_launch_rate: 20000
+processors:
+  - driver: container
+  - driver: symbolize
+    options:
+      process_cache: 4096
+      process_ttl: 1m
+      elf_cache: 512
+      debuginfod:
+        urls: []
+        cache_dir: /var/lib/etrace/debuginfod
+        cache_max_bytes: 2147483648
+        max_file_bytes: 536870912
+        timeout: 2m
+        workers: 2
+        queue_size: 256
+        retry_after: 10m
+exporter:
+  driver: grpc
+  options:
+    target: dns:///etrace-collector-headless.etrace.svc.cluster.local:4317
+    token: ${ETRACE_INGEST_TOKEN}
+    timeout: 10s
+    tls:
+      enabled: false

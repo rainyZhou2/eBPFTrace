@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: etrace
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: etrace-secrets
+  namespace: etrace
+type: Opaque
+stringData:
+  ingest-token: change-me
+  clickhouse-user: default
+  clickhouse-password: change-me

@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etrace-agent
+  namespace: etrace
+data:
+  agent.yaml: |
+    node: ${NODE_NAME}
+    proc_root: /host/proc
+    interval: 10s
+    admin:
+      listen: ":9431"
+    spool:
+      dir: /var/lib/etrace/spool
+      max_bytes: 536870912
+    sources:
+      - driver: offcpu
+        options:
+          min_block: 1ms
+    processors:
+      - driver: container
+      - driver: symbolize
+    exporter:
+      driver: grpc
+      options:
+        target: dns:///etrace-collector-headless.etrace.svc.cluster.local:4317
+        token: ${ETRACE_INGEST_TOKEN}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: etrace-agent
+  namespace: etrace
+spec:
+  selector:
+    matchLabels: {app: etrace-agent}
+  updateStrategy:
+    rollingUpdate: {maxUnavailable: 10%}
+  template:
+    metadata:
+      labels: {app: etrace-agent}
+    spec:
+      hostPID: true
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: agent
+          image: etrace:latest
+          args: ["agent", "-config", "/etc/etrace/agent.yaml"]
+          ports:
+            - {name: admin, containerPort: 9431}
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: ETRACE_INGEST_TOKEN
+              valueFrom: {secretKeyRef: {name: etrace-secrets, key: ingest-token}}
+          securityContext:
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              add: ["BPF", "PERFMON", "SYS_RESOURCE", "SYS_PTRACE", "SYSLOG"]
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet: {path: /healthz, port: admin}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/etrace}
+            - {name: proc, mountPath: /host/proc, readOnly: true}
+            - {name: btf, mountPath: /sys/kernel/btf, readOnly: true}
+            - {name: spool, mountPath: /var/lib/etrace}
+      volumes:
+        - name: config
+          configMap: {name: etrace-agent}
+        - name: proc
+          hostPath: {path: /proc}
+        - name: btf
+          hostPath: {path: /sys/kernel/btf}
+        - name: spool
+          hostPath: {path: /var/lib/etrace, type: DirectoryOrCreate}

@@ -1,0 +1,11 @@
+log:
+  level: debug
+  format: text
+admin:
+  listen: ":9432"
+grpc:
+  listen: ":4317"
+storage:
+  driver: memory
+  options:
+    retention: 1h

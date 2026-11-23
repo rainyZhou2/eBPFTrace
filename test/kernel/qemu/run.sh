@@ -103,8 +103,7 @@ echo "==> downloading kernel from $kernel_image"
 docker run --rm -v "$work/debs:/out" -e DEBIAN_FRONTEND=noninteractive "$kernel_image" bash -c '
 	set -e
 	apt-get update -qq
-	apt-get install -y -qq --no-install-recommends --download-only \
-		-o Dir::Cache::archives=/out linux-image-generic >/dev/null
+	apt-get install -y -qq --no-install-recommends --download-only -o Dir::Cache::archives=/out linux-image-generic >/dev/null
 ' >/dev/null
 
 deb=

@@ -1,0 +1,6 @@
+{
+  "name": "cityhash",
+  "version-string": "1.0.2",
+  "description": "Google CityHash, pinned to the version ClickHouse checksums compressed blocks with",
+  "homepage": "https://github.com/google/cityhash"
+}

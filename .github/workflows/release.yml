@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  BUILDER_IMAGE: etrace-cpp-builder:release
+
+jobs:
+  binaries:
+    name: build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/cpp-builder.Dockerfile
+          tags: ${{ env.BUILDER_IMAGE }}
+          load: true
+          cache-from: type=gha,scope=builder-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=builder-${{ matrix.arch }}
+
+      - name: Unit tests
+        run: make test BUILDER="${BUILDER_IMAGE}"
+
+      - name: Build the binary
+        run: make build VERSION="${GITHUB_REF_NAME}" BUILDER="${BUILDER_IMAGE}"
+
+      - name: Checksum
+        run: |
+          mkdir -p dist
+          cp "bin/etrace-linux-${{ matrix.arch }}" "dist/etrace-linux-${{ matrix.arch }}"
+          (cd dist && sha256sum "etrace-linux-${{ matrix.arch }}" > "etrace-linux-${{ matrix.arch }}.sha256")
+          cat "dist/etrace-linux-${{ matrix.arch }}.sha256"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: etrace-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish
+    needs: binaries
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect the artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Add the license
+        run: cp LICENSE NOTICE dist/
+
+      # Pushing a v* tag is the release trigger. Deleting and re-pushing the
+      # tag re-runs the job and replaces the assets.
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

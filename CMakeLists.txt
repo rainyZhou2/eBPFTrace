@@ -15,7 +15,10 @@ option(ETRACE_BUILD_TESTS "Build unit tests" ON)
 set(ETRACE_SANITIZE "" CACHE STRING "Sanitizers to enable, e.g. address,undefined or thread")
 
 find_package(protobuf CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
+# platform/grpc.cpp uses grpc::experimental::InMemoryCertificateProvider and
+# IdentityKeyOrSignerCertPair, added in gRPC 1.80. Distribution gRPC (for
+# example Debian 13's 1.51) is too old; build with the builder image.
+find_package(gRPC 1.80 CONFIG REQUIRED)
 find_package(absl CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)

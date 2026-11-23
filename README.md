@@ -31,6 +31,7 @@ eTrace is an eBPF profiler for wait time on the CPU and the GPU. It continuously
 - Linux 5.8 or later with BTF (`/sys/kernel/btf/vmlinux`). The DWARF user stack walker needs Linux 5.17 or later; older kernels fall back to frame pointers. GPU waits need Linux 5.15 or later (uprobe attach cookies); on older kernels they are not recorded.
 - Capabilities CAP_BPF, CAP_PERFMON, and CAP_SYS_RESOURCE (or root).
 - glibc 2.38 or later (Debian 13, Ubuntu 24.04). libstdc++ is linked statically.
+- gRPC 1.80 or later. The builder image pins 1.81; distribution packages such as Debian 13's 1.51 are too old for the TLS credentials code in `src/platform`.
 - Docker on the build host. Everything else is built inside the builder image.
 
 ## Quick start
@@ -249,7 +250,7 @@ make bpf-ide-headers # copies Linux/libbpf headers to build/bpf-include for clan
 ```
 
 - The BPF programs are compiled for the build host's architecture and embedded in the binary, so an amd64 binary is built on an amd64 builder.
-- `build/vcpkg-fetch.sh` routes GitHub and sourceware downloads through mirrors (`GITHUB_PROXY`, `SOURCEWARE_MIRROR` build args) when the origins are unreachable.
+- The builder image pulls `debian:trixie`, `deb.debian.org` and `github.com` by default. `BASE_IMAGE`, `APT_MIRROR`, `GITHUB_PROXY` and `SOURCEWARE_MIRROR` build args route the same steps through mirrors, for example `make builder BUILDER_BUILD_ARGS='--build-arg GITHUB_PROXY=https://gh-proxy.com'`; `build/vcpkg-fetch.sh` applies the last two to vcpkg downloads as well.
 - Pass `CMAKE_FLAGS=-DETRACE_SANITIZE=address,undefined` (or `thread`) to build with sanitizers.
 
 ### Test
@@ -260,6 +261,17 @@ make test-clickhouse # ClickHouse driver test against a throwaway server
 make test-kernel     # loads the BPF programs in a privileged container and checks chains, trace attribution and DWARF user stacks
 make e2e             # agent + collector + query + ClickHouse + Jaeger + an instrumented Python service
 ```
+
+The kernel tests can also run in QEMU, without giving the test process access to the host kernel:
+
+```sh
+make kernel-bin scenarios
+test/kernel/qemu/run.sh --kernel-image ubuntu:22.04 --expect 5.15
+```
+
+`run.sh` boots a distribution kernel with an initramfs that contains the test binary, the scenario binaries and a static busybox, runs `etrace_kernel_tests` in the guest, and fails on skipped tests. On a 5.15 kernel the DWARF-only tests are excluded because `bpf_loop` is unavailable; the frame-pointer path is still tested.
+
+`.github/workflows/ci.yml` runs the unit tests on amd64 and arm64, and the kernel tests in QEMU on Ubuntu 5.15 and 6.8 kernels. The QEMU harness uses two vCPUs and KVM when the runner exposes `/dev/kvm`; hosted runners fall back to TCG. `.github/workflows/release.yml` turns a `v*` tag into checksummed binary artifacts and a GitHub release: `git tag -a v0.1.0 -m v0.1.0 && git push origin v0.1.0`. Container images are still built locally with `make image`.
 
 ### Layout
 
@@ -287,6 +299,7 @@ sdk/c                libetrace_ctx: per-thread trace context publisher
 sdk/python           OpenTelemetry integration for Python
 test/unit            unit and in-process integration tests (GoogleTest)
 test/kernel          BPF tests that need root, BTF and the host PID namespace
+                     qemu/ runs them in a throwaway VM
 test/scenario        workloads with known chains for kernel tests
 test/e2e/stack       docker compose end-to-end stack
 deploy/k8s           DaemonSet, Deployments, Services, PDB, HPA
@@ -295,8 +308,12 @@ docs                 documentation (Chinese README)
 build                builder and runtime Dockerfiles, vcpkg overlays
 ```
 
-Each directory under `src` is one CMake library and dependencies point inward: `platform` depends on nothing in eTrace, and business code depends on interfaces (`storage::Writer`, `storage::Reader`, `agent::Source`, `agent::Exporter`, `tracing::Backend`). Concrete drivers are chosen only in the factory functions and `src/app`. Engineering rules for contributors and coding agents are in [C++AGENTS.md](C++AGENTS.md) (Chinese).
+Each directory under `src` is one CMake library and dependencies point inward: `platform` depends on nothing in eTrace, and business code depends on interfaces (`storage::Writer`, `storage::Reader`, `agent::Source`, `agent::Exporter`, `tracing::Backend`). Concrete drivers are chosen only in the factory functions and `src/app`.
 
 ### Extending
 
 Sources, processors, exporters, storage drivers, and trace backends are selected by `driver:` in config. To add one, implement the interface and add a branch to its factory: `agent::new_source`, `new_processor` and `new_exporter` in `src/agent/plugins.cpp`, `storage::open` in `src/storage/drivers.cpp`, or `tracing::open` in `src/tracing/tracing.cpp`. Driver options are plain structs decoded with `decode_fields`; unknown keys are rejected.
+
+## License
+
+Apache-2.0; see [LICENSE](LICENSE). The eBPF program in `src/agent/source/offcpu/bpf/offcpu.bpf.c` and the scenario programs in `test/scenario` keep the kernel-community dual license `GPL-2.0 OR BSD-2-Clause` declared in their headers.

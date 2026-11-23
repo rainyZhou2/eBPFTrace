@@ -85,7 +85,8 @@ void Source::configure(BpfObject& obj) {
 	for (const auto* p : {gpu::kEnterProg, gpu::kExitProg, gpu::kNcclProg}) {
 		obj.set_autoload(p, gpu_);
 	}
-	for (const auto* p : {gpu::kLaunchProg, gpu::kEventRecordProg, gpu::kFnEnterProg, gpu::kFnExitProg}) {
+	for (const auto* p :
+	     {gpu::kLaunchProg, gpu::kLaunchRetProg, gpu::kEventRecordProg, gpu::kFnEnterProg, gpu::kFnExitProg}) {
 		obj.set_autoload(p, gpu_ && opts_.gpu.launches);
 	}
 }

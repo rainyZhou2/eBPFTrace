@@ -2,6 +2,7 @@ HOST_ARCH ?= $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMAGE ?= etrace
 BUILDER ?= etrace-cpp-builder
+BUILDER_BUILD_ARGS ?=
 BUILD_VOLUME ?= etrace-build
 TEST_IMAGE ?= docker.1ms.run/library/debian:trixie
 CLICKHOUSE_IMAGE ?= docker.1ms.run/clickhouse/clickhouse-server:24.8
@@ -15,12 +16,12 @@ CONFIGURE = cmake -S /src -B /build -G Ninja \
 	-DVCPKG_INSTALLED_DIR=/opt/vcpkg_installed -DVCPKG_MANIFEST_INSTALL=OFF \
 	-DETRACE_VERSION=$(VERSION) $(CMAKE_FLAGS)
 
-.PHONY: all builder build test test-clickhouse test-kernel scenarios e2e image fmt fmt-check bpf-ide-headers ide clean
+.PHONY: all builder build test test-clickhouse test-kernel kernel-bin scenarios e2e image fmt fmt-check bpf-ide-headers ide clean
 
 all: build
 
 builder:
-	docker build -f build/cpp-builder.Dockerfile -t $(BUILDER) .
+	docker build $(BUILDER_BUILD_ARGS) -f build/cpp-builder.Dockerfile -t $(BUILDER) .
 
 build:
 	@mkdir -p bin
@@ -28,8 +29,15 @@ build:
 	docker run --rm -v $(BUILD_VOLUME):/build -v $(CURDIR)/bin:/out $(BUILDER) \
 		cp /build/etrace /out/etrace-linux-$(HOST_ARCH)
 
-test:
+test: scenarios
 	$(IN_BUILDER) sh -c '$(CONFIGURE) >/dev/null && ninja -C /build etrace_tests && /build/etrace_tests'
+
+# Copies the BPF test binary out of the build volume for test/kernel/qemu.
+kernel-bin:
+	$(IN_BUILDER) sh -c '$(CONFIGURE) >/dev/null && ninja -C /build etrace_kernel_tests'
+	@mkdir -p bin
+	docker run --rm -v $(BUILD_VOLUME):/build -v $(CURDIR)/bin:/out $(BUILDER) \
+		cp /build/etrace_kernel_tests /out/etrace_kernel_tests
 
 # Runs the ClickHouse driver test against a throwaway server.
 test-clickhouse:
@@ -47,6 +55,9 @@ scenarios:
 	$(IN_BUILDER) sh -c '\
 		make -C sdk/c CC=clang && cp sdk/c/libetrace_ctx.so test/scenario/ && make -C sdk/c clean && \
 		clang -O2 -static -pthread -o test/scenario/lockchain-$(HOST_ARCH) test/scenario/lockchain.c && \
+		if [ "$(HOST_ARCH)" = amd64 ]; then \
+			aarch64-linux-gnu-gcc -O2 -static -pthread -o test/scenario/lockchain-arm64 test/scenario/lockchain.c; \
+		fi && \
 		clang -O2 -fomit-frame-pointer -static -pthread -o test/scenario/nofp-$(HOST_ARCH) test/scenario/nofp.c && \
 		clang -O2 -pthread -Isdk/c -o test/scenario/traced-$(HOST_ARCH) test/scenario/traced.c \
 			-Ltest/scenario -letrace_ctx -Wl,-rpath,\$$ORIGIN && \

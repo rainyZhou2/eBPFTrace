@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILDER_IMAGE: etrace-cpp-builder:ci
+
+jobs:
+  # Unit tests run on both architectures natively. arm64 is the cheap way to
+  # catch the aarch64 BPF target and the layout_test BTF checks; it requires
+  # the arm64 hosted runner (public repositories get it for free).
+  unit:
+    name: unit tests (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/cpp-builder.Dockerfile
+          tags: ${{ env.BUILDER_IMAGE }}
+          load: true
+          cache-from: type=gha,scope=builder-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=builder-${{ matrix.arch }}
+
+      - name: Unit tests
+        run: make test BUILDER="${BUILDER_IMAGE}"
+
+      # make test now builds the scenario binaries first: without them the
+      # GPU and unwinder tests skip instead of running.
+      - name: Build the binary and the kernel-test inputs
+        if: matrix.arch == 'amd64'
+        run: make build kernel-bin BUILDER="${BUILDER_IMAGE}"
+
+      - name: Build the binary
+        if: matrix.arch != 'amd64'
+        run: make build BUILDER="${BUILDER_IMAGE}"
+
+      - name: Upload the release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: etrace-linux-${{ matrix.arch }}
+          path: bin/etrace-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+      - name: Upload the kernel-test inputs
+        if: matrix.arch == 'amd64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-tests-amd64
+          path: |
+            bin/etrace_kernel_tests
+            test/scenario/lockchain-amd64
+            test/scenario/nofp-amd64
+            test/scenario/traced-amd64
+            test/scenario/gpu-amd64
+            test/scenario/libetrace_ctx.so
+            test/scenario/libcuda.so.1
+            test/scenario/libcudart.so.12
+            test/scenario/libnccl.so.2
+          if-no-files-found: error
+
+  # The BPF programs are not exercised by the unit tests. Boot them in a
+  # throwaway VM on two kernel generations: 5.15 (frame-pointer fallback,
+  # no bpf_loop) and 6.8 (the DWARF walker and the whole suite).
+  kernel:
+    name: kernel tests (QEMU, ${{ matrix.kernel }})
+    needs: unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kernel: "5.15"
+            image: ubuntu:22.04
+            # bpf_loop arrives in 5.17; the two tests that force the DWARF
+            # walker cannot run, every other test still does.
+            filter: "-Kernel.UserStackWithoutFramePointers:Kernel.GpuWaits"
+          - kernel: "6.8"
+            image: ubuntu:24.04
+            filter: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 cpio
+
+      - name: Download the kernel-test inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-tests-amd64
+          path: .
+
+      - name: Run the kernel tests
+        run: |
+          test/kernel/qemu/run.sh \
+            --kernel-image "${{ matrix.image }}" \
+            --expect "${{ matrix.kernel }}" \
+            --filter "${{ matrix.filter }}" \
+            --timeout 3600

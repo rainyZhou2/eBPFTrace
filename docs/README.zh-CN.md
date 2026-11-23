@@ -31,6 +31,7 @@ eTrace 是基于 eBPF 的 CPU 与 GPU 等待时间分析工具。它持续记录
 - Linux 5.8 及以上，且开启 BTF（`/sys/kernel/btf/vmlinux`）。DWARF 用户栈回溯需要 Linux 5.17 及以上，更老的内核会回退到帧指针回溯。GPU 等待需要 Linux 5.15 及以上（uprobe attach cookie），更老的内核上不记录。
 - 具备 CAP_BPF、CAP_PERFMON 和 CAP_SYS_RESOURCE 权限（或 root）。
 - glibc 2.38 及以上（Debian 13、Ubuntu 24.04）。libstdc++ 已静态链接。
+- gRPC 1.80 及以上。构建镜像固定 1.81；Debian 13 的 1.51 等发行版包对 `src/platform` 里的 TLS credentials 代码来说太旧。
 - 构建机需要 Docker，其余依赖都在构建镜像内。
 
 ## 快速开始
@@ -249,7 +250,7 @@ make bpf-ide-headers # 把 Linux/libbpf 头文件复制到 build/bpf-include，�
 ```
 
 - BPF 程序按构建机的架构编译并嵌入二进制，所以 amd64 二进制要在 amd64 构建镜像中构建。
-- 源站不可达时，`build/vcpkg-fetch.sh` 会把 GitHub 和 sourceware 的下载转到镜像源（构建参数 `GITHUB_PROXY`、`SOURCEWARE_MIRROR`）。
+- 构建镜像默认从上游拉取 `debian:trixie`、`deb.debian.org` 和 `github.com`；构建参数 `BASE_IMAGE`、`APT_MIRROR`、`GITHUB_PROXY`、`SOURCEWARE_MIRROR` 可以把这些步骤转到镜像源，例如 `make builder BUILDER_BUILD_ARGS='--build-arg GITHUB_PROXY=https://gh-proxy.com'`；`build/vcpkg-fetch.sh` 也会把后两个用于 vcpkg 下载。
 - 传入 `CMAKE_FLAGS=-DETRACE_SANITIZE=address,undefined`（或 `thread`）可开启 sanitizer 构建。
 
 ### 测试
@@ -260,6 +261,17 @@ make test-clickhouse # 针对临时 ClickHouse 实例测试 ClickHouse 驱动
 make test-kernel     # 在特权容器中加载 BPF 程序，校验唤醒链、trace 归属和 DWARF 用户栈
 make e2e             # agent + collector + query + ClickHouse + Jaeger + 已接入的 Python 服务
 ```
+
+也可以不把宿主机内核暴露给测试进程，改在 QEMU 中运行内核测试：
+
+```sh
+make kernel-bin scenarios
+test/kernel/qemu/run.sh --kernel-image ubuntu:22.04 --expect 5.15
+```
+
+`run.sh` 用发行版内核启动一个包含测试二进制、场景程序和静态 busybox 的 initramfs，在 guest 内运行 `etrace_kernel_tests`，遇到 skipped 即失败。5.15 内核没有 `bpf_loop`，只跑帧指针路径，DWARF 专项测试会被排除。
+
+`.github/workflows/ci.yml` 在 amd64 和 arm64 上跑单元测试，并在 QEMU 中用 Ubuntu 5.15 和 6.8 内核跑内核测试。QEMU 默认使用 2 个 vCPU，runner 暴露 `/dev/kvm` 时自动使用 KVM，否则回退到 TCG。`.github/workflows/release.yml` 把 `v*` tag 变成带校验和的二进制产物和 GitHub release：`git tag -a v0.1.0 -m v0.1.0 && git push origin v0.1.0`。容器镜像仍用 `make image` 在本地构建。
 
 ### 目录结构
 
@@ -287,6 +299,7 @@ sdk/c                libetrace_ctx：按线程发布 trace 上下文
 sdk/python           Python 的 OpenTelemetry 集成
 test/unit            单元测试和进程内集成测试（GoogleTest）
 test/kernel          需要 root、BTF 和宿主机 PID 命名空间的 BPF 测试
+                     qemu/ 在一次性虚拟机里运行它们
 test/scenario        内核测试用的已知唤醒链负载
 test/e2e/stack       docker compose 端到端环境
 deploy/k8s           DaemonSet、Deployment、Service、PDB、HPA
@@ -295,8 +308,12 @@ docs                 文档（中文 README）
 build                构建与运行 Dockerfile、vcpkg overlay
 ```
 
-`src` 下每个目录是一个 CMake 库，依赖方向向内：`platform` 不依赖 eTrace 的任何其他部分，业务代码只依赖接口（`storage::Writer`、`storage::Reader`、`agent::Source`、`agent::Exporter`、`tracing::Backend`）。具体驱动只在工厂函数和 `src/app` 中选择。面向贡献者和编码 Agent 的工程规范见 [C++AGENTS.md](../C++AGENTS.md)。
+`src` 下每个目录是一个 CMake 库，依赖方向向内：`platform` 不依赖 eTrace 的任何其他部分，业务代码只依赖接口（`storage::Writer`、`storage::Reader`、`agent::Source`、`agent::Exporter`、`tracing::Backend`）。具体驱动只在工厂函数和 `src/app` 中选择。
 
 ### 扩展
 
 数据源、处理器、导出器、存储驱动和 trace 后端都通过配置中的 `driver:` 选择。新增一种时，实现对应接口并在其工厂中加一个分支：`src/agent/plugins.cpp` 中的 `agent::new_source`、`new_processor` 和 `new_exporter`，`src/storage/drivers.cpp` 中的 `storage::open`，或 `src/tracing/tracing.cpp` 中的 `tracing::open`。驱动选项是用 `decode_fields` 解码的普通结构体，未知字段会被拒绝。
+
+## 许可证
+
+Apache-2.0，见 [LICENSE](../LICENSE)。`src/agent/source/offcpu/bpf/offcpu.bpf.c` 和 `test/scenario` 下的场景程序保留其文件头声明的内核社区双许可 `GPL-2.0 OR BSD-2-Clause`。

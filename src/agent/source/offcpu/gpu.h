@@ -16,6 +16,7 @@ inline constexpr const char* kEnterProg = "on_gpu_enter";
 inline constexpr const char* kExitProg = "on_gpu_exit";
 inline constexpr const char* kNcclProg = "on_nccl_enter";
 inline constexpr const char* kLaunchProg = "on_gpu_launch";
+inline constexpr const char* kLaunchRetProg = "on_gpu_launch_ret";
 inline constexpr const char* kEventRecordProg = "on_gpu_event_record";
 inline constexpr const char* kFnEnterProg = "on_gpu_fn_enter";
 inline constexpr const char* kFnExitProg = "on_gpu_fn_exit";

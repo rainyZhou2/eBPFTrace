@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package etrace.v1;
 
-option go_package = "github.com/etrace/etrace/api/gen/etrace/v1;etracev1";
-
 service IngestService {
   rpc Push(PushRequest) returns (PushResponse);
 }

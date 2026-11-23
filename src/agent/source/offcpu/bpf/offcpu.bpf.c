@@ -154,9 +154,12 @@ struct gpu_wait {
 #define KERNEL_FUNC 2
 #define KERNEL_GRAPH 3
 
-/* A driver launch within this long of a runtime launch by the same thread
- * on the same stream is the runtime's own call into the driver. */
-#define NESTED_LAUNCH_NS 100000
+/* A runtime launch calls the driver itself. The launch entry probe opens a
+ * scope in the calling thread and the matching uretprobe closes it; a driver
+ * launch inside that scope is the runtime's own call and is not counted
+ * again. The timeout only guards a probe that never returns (a thread that
+ * dies inside the call, a tail call that skips the return probe). */
+#define LAUNCH_SCOPE_TIMEOUT_NS 1000000000ULL
 
 #define KERNEL_NAME_LEN 128
 
@@ -169,6 +172,13 @@ struct launch {
 	__u32 count;
 	__u8 kind;
 	__u8 _pad[7];
+};
+
+/* Per-thread nesting of runtime launches, see LAUNCH_SCOPE_TIMEOUT_NS. */
+struct launch_scope {
+	__u32 depth;
+	__u32 _pad;
+	__u64 ts;
 };
 
 struct handle_key {
@@ -283,6 +293,7 @@ DEFINE_MAP(event_streams, BPF_MAP_TYPE_LRU_HASH, struct handle_key, __u64, 16384
 DEFINE_MAP(fn_lookups, BPF_MAP_TYPE_LRU_HASH, __u32, struct fn_lookup, 4096);
 DEFINE_MAP(kernel_names, BPF_MAP_TYPE_LRU_HASH, struct handle_key, struct kernel_name, 16384);
 DEFINE_MAP(launch_hits, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, __u64, 1);
+DEFINE_MAP(launch_scope, BPF_MAP_TYPE_LRU_HASH, __u32, struct launch_scope, 65536);
 DEFINE_MAP(drops, BPF_MAP_TYPE_ARRAY, __u32, __u64, 8);
 
 struct {
@@ -1174,8 +1185,6 @@ static __always_inline void note_launch(void *map, void *key, __u64 kernel, __u8
 		bpf_map_update_elem(map, key, &init, BPF_NOEXIST);
 		return;
 	}
-	if (kind == KERNEL_FUNC && l->kind == KERNEL_STUB && l->tid == tid && now - l->ts < NESTED_LAUNCH_NS)
-		return;
 	l->kernel = kernel;
 	l->kind = kind;
 	l->tid = tid;
@@ -1231,11 +1240,59 @@ int on_gpu_launch(void *ctx)
 
 	__u32 tid = cur->pid, tgid = cur->tgid;
 	__u64 now = bpf_ktime_get_ns();
+	if (kind == KERNEL_STUB) {
+		struct launch_scope *scope = bpf_map_lookup_elem(&launch_scope, &tid);
+		if (scope) {
+			struct launch_scope open = *scope;
+			if (now - open.ts > LAUNCH_SCOPE_TIMEOUT_NS)
+				open.depth = 0;
+			open.depth++;
+			open.ts = now;
+			bpf_map_update_elem(&launch_scope, &tid, &open, BPF_ANY);
+		} else {
+			struct launch_scope init = { .depth = 1, .ts = now };
+			bpf_map_update_elem(&launch_scope, &tid, &init, BPF_NOEXIST);
+		}
+	} else if (kind == KERNEL_FUNC) {
+		struct launch_scope *scope = bpf_map_lookup_elem(&launch_scope, &tid);
+		if (scope) {
+			if (now - scope->ts <= LAUNCH_SCOPE_TIMEOUT_NS && scope->depth > 0)
+				return 0;
+			bpf_map_delete_elem(&launch_scope, &tid);
+		}
+	}
 	if (!default_stream(stream)) {
 		struct handle_key hk = { .tgid = tgid, .handle = stream };
 		note_launch(&stream_launches, &hk, kernel, kind, tid, now);
 	}
 	note_launch(&proc_launches, &tgid, kernel, kind, tid, now);
+	return 0;
+}
+
+/* Closes the runtime launch scope opened on entry. */
+SEC("uretprobe")
+int on_gpu_launch_ret(void *ctx)
+{
+	(void)ctx;
+	struct task_struct *cur = (void *)bpf_get_current_task_btf();
+	if (!wanted(cur))
+		return 0;
+
+	__u32 tid = cur->pid;
+	struct launch_scope *scope = bpf_map_lookup_elem(&launch_scope, &tid);
+	if (!scope)
+		return 0;
+	if (bpf_ktime_get_ns() - scope->ts > LAUNCH_SCOPE_TIMEOUT_NS) {
+		bpf_map_delete_elem(&launch_scope, &tid);
+		return 0;
+	}
+	struct launch_scope open = *scope;
+	if (open.depth > 0)
+		open.depth--;
+	if (open.depth == 0)
+		bpf_map_delete_elem(&launch_scope, &tid);
+	else
+		bpf_map_update_elem(&launch_scope, &tid, &open, BPF_ANY);
 	return 0;
 }
 

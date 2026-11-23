@@ -13,8 +13,14 @@ RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sou
        build-essential cmake ninja-build pkg-config git curl ca-certificates zip unzip tar \
        autoconf automake autoconf-archive autotools-dev libtool bison flex gettext autopoint python3 \
        clang llvm libbpf-dev linux-libc-dev bpftool make clang-format openssl \
-       gcc-aarch64-linux-gnu libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
     && rm -rf /var/lib/apt/lists/*
+# The unit tests parse an arm64 scenario binary on every host; only an amd64
+# builder needs the cross toolchain (an arm64 builder compiles it natively).
+RUN if [ "$(dpkg --print-architecture)" = amd64 ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        gcc-aarch64-linux-gnu libc6-dev-arm64-cross linux-libc-dev-arm64-cross \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 ENV GITHUB_PROXY=${GITHUB_PROXY} \
     SOURCEWARE_MIRROR=${SOURCEWARE_MIRROR} \
     VCPKG_ROOT=/opt/vcpkg \

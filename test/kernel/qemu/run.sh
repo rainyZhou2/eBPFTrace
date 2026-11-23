@@ -79,12 +79,24 @@ done
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 guests are supported (got $(uname -m))"
 [ -f "$test_bin" ] || die "test binary not found: $test_bin (run make kernel-bin)"
 [ -d "$scenarios" ] || die "scenario directory not found: $scenarios (run make scenarios)"
+# GitHub artifacts do not preserve the executable bit.
+chmod +x "$test_bin"
 for cmd in docker qemu-system-x86_64 cpio gzip timeout dpkg-deb; do
 	command -v "$cmd" >/dev/null || die "missing required command: $cmd"
 done
 
+cleanup() {
+	if [ -d "${work:-}" ]; then
+		# Files written by the containers below are root-owned; remove them
+		# through a container so a non-root runner can delete the directory.
+		docker run --rm -v "$work:/w" debian:trixie sh -c 'find /w -mindepth 1 -delete' >/dev/null 2>&1 || true
+		rm -rf "$work" 2>/dev/null || true
+	fi
+	return 0
+}
+
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap cleanup EXIT
 mkdir -p "$work/debs" "$work/kernel" "$work/root"
 
 echo "==> downloading kernel from $kernel_image"
@@ -124,6 +136,13 @@ echo "==> assembling guest rootfs"
 cp "$test_bin" "$work/root/kt"
 mkdir -p "$work/root/bin" "$work/root/scen" "$work/root/proc" "$work/root/sys" "$work/root/dev" "$work/root/tmp" "$work/root/etc"
 cp -a "$scenarios/." "$work/root/scen/"
+# The scenario binaries come from the same artifact and need their mode back.
+chmod +x "$work/root/kt"
+for bin in lockchain-amd64 nofp-amd64 traced-amd64 gpu-amd64; do
+	if [ -f "$work/root/scen/$bin" ]; then
+		chmod +x "$work/root/scen/$bin"
+	fi
+done
 printf 'root:x:0:0:root:/root:/bin/sh\n' >"$work/root/etc/passwd"
 printf '127.0.0.1 localhost\n' >"$work/root/etc/hosts"
 if [ -n "$filter" ]; then
@@ -222,7 +241,10 @@ if ! grep -q 'ETRACE_KERNEL_TEST_EXIT=' "$work/console.log"; then
 	tail -n 120 "$work/console.log" >&2
 	die "the guest did not reach the tests (qemu status $qemu_status)"
 fi
-rc=$(sed -n 's/^ETRACE_KERNEL_TEST_EXIT=//p' "$work/console.log" | tail -n 1)
+rc=$(sed -n 's/^ETRACE_KERNEL_TEST_EXIT=//p' "$work/console.log" | tr -d '\r' | tail -n 1)
+case "$rc" in
+'' | *[!0-9]*) die "guest returned an invalid exit status: '$rc'" ;;
+esac
 if grep -q '\[  SKIPPED \]' "$work/console.log"; then
 	die "the suite skipped tests; a missing prerequisite must fail the job"
 fi

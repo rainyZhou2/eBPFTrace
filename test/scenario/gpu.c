@@ -35,6 +35,8 @@ int cudaEventRecord(void *e, void *s);
 int cudaEventSynchronize(void *e);
 int cudaStreamSynchronize(void *s);
 int cuCtxSynchronize(void);
+int cudaGraphLaunch(void *e, void *s);
+int cuGraphLaunch(void *e, void *s);
 
 /* Stands for the host stub nvcc generates for a __global__ function. */
 __attribute__((noinline)) void matmul_kernel(void)
@@ -52,6 +54,21 @@ int main(int argc, char **argv)
 	fflush(stdout);
 	if (read(0, &c, 1) != 1)
 		return 1;
+
+	if (argc > 1 && strcmp(argv[1], "graph") == 0) {
+		/* Runtime and driver graph launches, each followed by its own
+		 * stream sync. The agent must count one queued graph per stream,
+		 * not the runtime's nested driver call as well. */
+		cudaGraphLaunch((void *)0x1234, (void *)0x7000);
+		cudaStreamSynchronize((void *)0x7000);
+		cuGraphLaunch((void *)0x5678, (void *)0x7100);
+		cuStreamSynchronize((void *)0x7100);
+		printf("done\n");
+		fflush(stdout);
+		if (read(0, &c, 1) != 1)
+			return 1;
+		return 0;
+	}
 
 	if (argc > 1 && strcmp(argv[1], "hang") == 0) {
 		cuModuleGetFunction(&f, (void *)0x1000, "stuck_kernel");

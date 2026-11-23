@@ -14,6 +14,7 @@ typedef int CUresult;
 typedef void *CUstream;
 typedef void *CUevent;
 typedef void *CUfunction;
+typedef void *CUgraphExec;
 typedef void *CUmodule;
 typedef struct {
 	unsigned x, y, z;
@@ -91,10 +92,18 @@ EXPORT CUresult cuEventRecord(CUevent e, CUstream s)
 	sink = (uintptr_t)e + (uintptr_t)s;
 	return 0;
 }
+
+/* Queues a graph; the following stream sync is what waits for it. */
+EXPORT CUresult cuGraphLaunch(CUgraphExec e, CUstream s)
+{
+	sink = (uintptr_t)e + (uintptr_t)s;
+	return 0;
+}
 #elif defined(FAKE_CUDART)
 CUresult cuStreamSynchronize(CUstream s);
 CUresult cuEventSynchronize(CUevent e);
 CUresult cuEventRecord(CUevent e, CUstream s);
+CUresult cuGraphLaunch(CUgraphExec e, CUstream s);
 CUresult cuLaunchKernel(CUfunction f, unsigned gx, unsigned gy, unsigned gz, unsigned bx, unsigned by, unsigned bz,
 			unsigned shmem, CUstream s, void **params, void **extra);
 
@@ -127,6 +136,13 @@ EXPORT int cudaLaunchKernel(const void *func, dim3 grid, dim3 block, void **args
 	sink = (uintptr_t)func;
 	last_error = cuLaunchKernel((CUfunction)0xdead0000, grid.x, grid.y, grid.z, block.x, block.y, block.z,
 				    (unsigned)shmem, s, args, NULL);
+	return last_error;
+}
+
+/* Like the real runtime, launches the graph through the driver. */
+EXPORT int cudaGraphLaunch(CUgraphExec e, CUstream s)
+{
+	last_error = cuGraphLaunch(e, s);
 	return last_error;
 }
 #elif defined(FAKE_NCCL)

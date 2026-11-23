@@ -49,13 +49,14 @@ constexpr std::array<Launch, 6> kLaunches = {{
         {"cudaLaunchKernel", 3},
         {"cudaLaunchKernelExC", 4},
         {"cuGraphLaunch", 5},
-        {"cudaGraphLaunch", 5},
+        {"cudaGraphLaunch", 6},
 }};
 
 // Runtime launch layouts: these calls can call the driver themselves, so
 // they also get a uretprobe that closes the launch scope.
 constexpr uint64_t kLayoutCuda = 3;
 constexpr uint64_t kLayoutCudaEx = 4;
+constexpr uint64_t kLayoutCudaGraph = 6;
 
 constexpr std::array<std::string_view, 4> kEventRecords = {"cuEventRecord", "cuEventRecordWithFlags", "cudaEventRecord",
                                                            "cudaEventRecordWithFlags"};
@@ -164,7 +165,8 @@ std::vector<uprobes::Probe> launch_probes(const std::string& path) {
 		for (const auto& l : kLaunches) {
 			if (same_call(l.name, name, true)) {
 				out.push_back({kLaunchProg, name, false, l.layout});
-				if (l.layout == kLayoutCuda || l.layout == kLayoutCudaEx) {
+				if (l.layout == kLayoutCuda || l.layout == kLayoutCudaEx ||
+				    l.layout == kLayoutCudaGraph) {
 					out.push_back({kLaunchRetProg, name, true, 0});
 				}
 				break;

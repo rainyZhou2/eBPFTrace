@@ -302,12 +302,18 @@ TEST(Gpu, ProbesFromDynamicSymbols) {
 		launch[p.symbol + (p.retprobe ? " ret" : "")] = std::format("{} {}", p.prog, p.cookie);
 	}
 	EXPECT_EQ(launch, (std::map<std::string, std::string>{{"cuLaunchKernel", "on_gpu_launch 1"},
+	                                                      {"cuGraphLaunch", "on_gpu_launch 5"},
 	                                                      {"cuEventRecord", "on_gpu_event_record 0"},
 	                                                      {"cuModuleGetFunction", "on_gpu_fn_enter 0"},
 	                                                      {"cuModuleGetFunction ret", "on_gpu_fn_exit 0"}}));
 	auto rt = gpu::launch_probes(dir + "libcudart.so.12");
 	EXPECT_TRUE(std::any_of(rt.begin(), rt.end(),
 	                        [](const auto& p) { return p.symbol == "cudaLaunchKernel" && p.cookie == 3; }));
+	EXPECT_TRUE(std::any_of(rt.begin(), rt.end(), [](const auto& p) {
+		return p.symbol == "cudaGraphLaunch" && p.cookie == 6 && !p.retprobe;
+	}));
+	EXPECT_TRUE(std::any_of(rt.begin(), rt.end(),
+	                        [](const auto& p) { return p.symbol == "cudaGraphLaunch" && p.retprobe; }));
 }
 
 TEST(Gpu, DecodeNamesTheWait) {

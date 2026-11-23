@@ -316,6 +316,21 @@ TEST(Kernel, UserStackWithoutFramePointers) {
 	}
 }
 
+// describe_gpu_wait renders a GPU wait as "call kernel [nccl] stream launches".
+std::string describe_gpu_wait(const model::OffCPUEvent& e, symbol::ProcResolver& r) {
+	std::string call, kernel, nccl;
+	for (const auto& f : e.stack) {
+		if (f.kind == model::FrameKind::gpu_kernel) {
+			kernel = !f.function.empty() ? f.function : r.user(e.task.pid, f.address).function;
+		} else if (f.module == "[gpu]" && f.function.starts_with("waiting on ")) {
+			nccl = f.function.substr(11) + " ";
+		} else if (f.module == "[gpu]") {
+			call = f.function;
+		}
+	}
+	return std::format("{} {} {}{:#x} {}", call, kernel, nccl, e.gpu.stream, e.gpu.launches);
+}
+
 // The gpu scenario links stand-ins for libcuda, libcudart and libnccl and
 // makes four GPU waits (see test/scenario/gpu.c). Each must come out once,
 // named by its CUDA call and the kernel queued last on what it waited for.
@@ -350,20 +365,6 @@ void gpu_waits(const std::string& bin, const char* mode) {
 	symbol::ProcResolver r(rc);
 	ASSERT_EQ(r.user(c.pid(), stub).function, "matmul_kernel");
 
-	// describe renders a GPU wait as "call kernel [nccl] stream launches".
-	auto describe = [&](const model::OffCPUEvent& e) {
-		std::string call, kernel, nccl;
-		for (const auto& f : e.stack) {
-			if (f.kind == model::FrameKind::gpu_kernel) {
-				kernel = !f.function.empty() ? f.function : r.user(c.pid(), f.address).function;
-			} else if (f.module == "[gpu]" && f.function.starts_with("waiting on ")) {
-				nccl = f.function.substr(11) + " ";
-			} else if (f.module == "[gpu]") {
-				call = f.function;
-			}
-		}
-		return std::format("{} {} {}{:#x} {}", call, kernel, nccl, e.gpu.stream, e.gpu.launches);
-	};
 	std::multiset<std::string> got;
 	int plain_long = 0;
 	for (const auto& e : b.events) {
@@ -374,7 +375,7 @@ void gpu_waits(const std::string& bin, const char* mode) {
 			plain_long++;
 			continue;
 		}
-		auto d = describe(e);
+		auto d = describe_gpu_wait(e, r);
 		got.insert(d);
 		bool spins = d.starts_with("cuCtxSynchronize");
 		EXPECT_EQ(e.chain.empty(), spins) << d << ": only the sleeping waits have a wakeup chain";
@@ -410,6 +411,67 @@ TEST(Kernel, GpuWaits) {
 	for (const auto* mode : {kUnwindDwarf, kUnwindFramePointer}) {
 		gpu_waits(bin, mode);
 	}
+}
+
+// A runtime graph launch calls the driver itself. Only the runtime call may
+// be counted; the nested driver launch must not add a second graph to the
+// stream. A direct driver graph launch still counts once. The test uses the
+// auto unwinder so it also runs on kernels without bpf_loop.
+TEST(Kernel, GpuGraphLaunches) {
+	REQUIRE_BPF();
+	auto bin = env("ETRACE_SCENARIO_GPU");
+	if (bin.empty()) {
+		GTEST_SKIP() << "ETRACE_SCENARIO_GPU not set";
+	}
+	Child c({bin, "graph"});
+	uint32_t tid = 0;
+	unsigned long long stub = 0;
+	ASSERT_EQ(std::sscanf(c.line().c_str(), "%u %llx", &tid, &stub), 2);
+	(void)stub;
+
+	Options o;
+	o.target_pid = c.pid();
+	o.trace_context.enabled = false;
+	o.slow_event = 20ms;
+	o.gpu.scan_interval = 1s;
+	Harness h(o);
+	auto deadline = std::chrono::steady_clock::now() + 5s;
+	while ((h.src->gpu_libraries_probed() < 3 || h.src->gpu_launch_libraries_probed() < 2) &&
+	       std::chrono::steady_clock::now() < deadline) {
+		h.src->sync_gpu_probes();
+		std::this_thread::sleep_for(50ms);
+	}
+	ASSERT_EQ(h.src->gpu_libraries_probed(), 3u) << "GPU wait probes were not attached";
+	ASSERT_EQ(h.src->gpu_launch_libraries_probed(), 2u) << "launch probes were not attached";
+	c.send('g');
+	ASSERT_EQ(c.line(), "done\n");
+	auto b = h.collect();
+
+	symbol::Config rc;
+	rc.process_cache = 8;
+	rc.elf_cache = 8;
+	symbol::ProcResolver r(rc);
+	std::multiset<std::string> got;
+	int plain_long = 0;
+	for (const auto& e : b.events) {
+		if (e.task.tid != tid || e.duration() < 30ms) {
+			continue;
+		}
+		if (e.reason != model::OffCPUReason::gpu) {
+			plain_long++;
+			continue;
+		}
+		got.insert(describe_gpu_wait(e, r));
+	}
+	c.send('q');
+	auto [st, out] = c.wait();
+	ASSERT_EQ(st, 0) << out;
+	std::multiset<std::string> want{
+	        "cudaStreamSynchronize CUDA graph 0x7000 1",
+	        "cuStreamSynchronize CUDA graph 0x7100 1",
+	};
+	EXPECT_EQ(got, want);
+	EXPECT_EQ(plain_long, 0) << "sleeps inside GPU waits must not be counted again as off-CPU time";
 }
 
 // Launch probes trap on every launch, so they are detached once the launch

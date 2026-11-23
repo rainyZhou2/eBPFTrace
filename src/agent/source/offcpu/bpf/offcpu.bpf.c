@@ -144,7 +144,8 @@ struct gpu_wait {
 #define LAUNCH_CU_EX 2	  /* cuLaunchKernelEx(config, f, ...) */
 #define LAUNCH_CUDA 3	  /* cudaLaunchKernel(stub, dim3 grid, dim3 block, args, shmem, stream) */
 #define LAUNCH_CUDA_EX 4  /* cudaLaunchKernelExC(config, stub, args) */
-#define LAUNCH_GRAPH 5	  /* cuGraphLaunch / cudaGraphLaunch(exec, stream) */
+#define LAUNCH_CU_GRAPH 5  /* cuGraphLaunch(exec, stream) */
+#define LAUNCH_CUDA_GRAPH 6  /* cudaGraphLaunch(exec, stream) */
 #define LAUNCH_CONFIG_STREAM 32 /* offset of the stream in both launch configs */
 
 /* What a recorded kernel identifier is. A runtime stub is the host address
@@ -1205,34 +1206,45 @@ int on_gpu_launch(void *ctx)
 		(*hits)++;
 
 	__u64 kernel = 0, stream = 0, cfg;
-	__u8 kind = 0;
+	__u8 kind = 0, open_scope = 0, consume_scope = 0;
 	switch (bpf_get_attach_cookie(ctx)) {
 	case LAUNCH_CU:
 		kernel = uprobe_arg(ctx, 0);
 		stream = uprobe_arg(ctx, 8);
 		kind = KERNEL_FUNC;
+		consume_scope = 1;
 		break;
 	case LAUNCH_CU_EX:
 		cfg = uprobe_arg(ctx, 0);
 		bpf_probe_read_user(&stream, sizeof(stream), (void *)(cfg + LAUNCH_CONFIG_STREAM));
 		kernel = uprobe_arg(ctx, 1);
 		kind = KERNEL_FUNC;
+		consume_scope = 1;
 		break;
 	case LAUNCH_CUDA:
 		kernel = uprobe_arg(ctx, 0);
 		stream = uprobe_arg(ctx, 7);
 		kind = KERNEL_STUB;
+		open_scope = 1;
 		break;
 	case LAUNCH_CUDA_EX:
 		cfg = uprobe_arg(ctx, 0);
 		bpf_probe_read_user(&stream, sizeof(stream), (void *)(cfg + LAUNCH_CONFIG_STREAM));
 		kernel = uprobe_arg(ctx, 1);
 		kind = KERNEL_STUB;
+		open_scope = 1;
 		break;
-	case LAUNCH_GRAPH:
+	case LAUNCH_CU_GRAPH:
 		kernel = uprobe_arg(ctx, 0);
 		stream = uprobe_arg(ctx, 1);
 		kind = KERNEL_GRAPH;
+		consume_scope = 1;
+		break;
+	case LAUNCH_CUDA_GRAPH:
+		kernel = uprobe_arg(ctx, 0);
+		stream = uprobe_arg(ctx, 1);
+		kind = KERNEL_GRAPH;
+		open_scope = 1;
 		break;
 	default:
 		return 0;
@@ -1240,7 +1252,7 @@ int on_gpu_launch(void *ctx)
 
 	__u32 tid = cur->pid, tgid = cur->tgid;
 	__u64 now = bpf_ktime_get_ns();
-	if (kind == KERNEL_STUB) {
+	if (open_scope) {
 		struct launch_scope *scope = bpf_map_lookup_elem(&launch_scope, &tid);
 		if (scope) {
 			struct launch_scope open = *scope;
@@ -1253,7 +1265,7 @@ int on_gpu_launch(void *ctx)
 			struct launch_scope init = { .depth = 1, .ts = now };
 			bpf_map_update_elem(&launch_scope, &tid, &init, BPF_NOEXIST);
 		}
-	} else if (kind == KERNEL_FUNC) {
+	} else if (consume_scope) {
 		struct launch_scope *scope = bpf_map_lookup_elem(&launch_scope, &tid);
 		if (scope) {
 			if (now - scope->ts <= LAUNCH_SCOPE_TIMEOUT_NS && scope->depth > 0)

@@ -187,7 +187,8 @@ TEST(Doctor, BuildAndRender) {
 
 	std::ostringstream text;
 	doctor::write_text(text, rep);
-	for (const char* want : {"api <- worker", "root cause worker: app`unlock", "app`read_config"}) {
+	for (const char* want :
+	     {"api <- worker (observed)", "observed wakeup: worker: app`unlock", "app`read_config"}) {
 		EXPECT_NE(text.str().find(want), std::string::npos) << want << "\n" << text.str();
 	}
 	std::ostringstream html;
@@ -376,6 +377,25 @@ TEST(ClickHouse, MigrateExistingTablesAndQueryPods) {
 	EXPECT_EQ(events[0].chain[0].span_id, "00f067aa0ba902b7");
 	eq.filter = miss;
 	EXPECT_TRUE(s.events(eq).empty()) << "namespace filter ignored";
+
+	auto observed = b.offcpu.front();
+	observed.task.comm = "cache";
+	observed.chain.front().wait_stack.clear();
+	observed.chain.front().wait_ns = 0;
+	auto inferred = observed;
+	inferred.blocked_ns = 10;
+	inferred.chain.front().wait_ns = 4;
+	b.id = "wake-evidence";
+	b.offcpu = {observed, inferred};
+	b.events.clear();
+	s.write_batch(b);
+	cq.filter.comm = "cache";
+	chains = s.offcpu_chains(cq);
+	ASSERT_EQ(chains.size(), 2u) << "missing wait stacks must not combine observed and inferred samples";
+	EXPECT_EQ(chains[0].total_ns, 10u);
+	EXPECT_EQ(chains[0].chain.at(0).wait_ns, 4u);
+	EXPECT_EQ(chains[1].total_ns, 5u);
+	EXPECT_EQ(chains[1].chain.at(0).wait_ns, 0u);
 	EXPECT_NO_THROW(s.ping(2s));
 }
 

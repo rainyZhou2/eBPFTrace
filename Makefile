@@ -16,7 +16,7 @@ CONFIGURE = cmake -S /src -B /build -G Ninja \
 	-DVCPKG_INSTALLED_DIR=/opt/vcpkg_installed -DVCPKG_MANIFEST_INSTALL=OFF \
 	-DETRACE_VERSION=$(VERSION) $(CMAKE_FLAGS)
 
-.PHONY: all builder build test test-clickhouse test-kernel kernel-bin scenarios e2e image fmt fmt-check bpf-ide-headers ide clean
+.PHONY: all builder build test test-clickhouse test-kernel kernel-bin scenarios e2e e2e-scenario image fmt fmt-check bpf-ide-headers ide clean
 
 all: build
 
@@ -79,7 +79,11 @@ test-kernel: scenarios
 		-e ETRACE_SCENARIO_NOFP=/scen/nofp-$(HOST_ARCH) -e ETRACE_SCENARIO_GPU=/scen/gpu-$(HOST_ARCH) $(TEST_IMAGE) \
 		sh -c 'cp -r /s /scen && cp /build/etrace_kernel_tests /kt && /kt'
 
-e2e: build scenarios
+e2e-scenario:
+	$(IN_BUILDER) clang -O2 -Wall -Wextra -Werror -fPIC -shared -pthread \
+		-o /src/test/scenario/libetrace_load_cache.so /src/test/e2e/stack/load_cache.c
+
+e2e: build scenarios e2e-scenario
 	HOST_ARCH=$(HOST_ARCH) test/e2e/stack/run.sh
 
 image:

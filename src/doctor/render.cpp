@@ -23,12 +23,33 @@ std::string join(const std::vector<std::string>& v, std::string_view sep) {
 	return out;
 }
 
-std::string chain_summary(const storage::Event& e) {
-	std::vector<std::string> parts;
-	for (const auto& h : e.chain) {
-		parts.push_back(h.comm);
+std::string wake_path(std::vector<std::string> path, size_t first_hop, std::string_view sep) {
+	for (size_t i = first_hop; i < path.size(); i++) {
+		path[i] += i == first_hop ? " (observed)" : " (inferred)";
 	}
-	return join(parts, " <- ");
+	return join(path, sep);
+}
+
+std::string chain_summary(const storage::Event& e, std::string_view sep) {
+	std::vector<std::string> path;
+	for (const auto& h : e.chain) {
+		path.push_back(h.comm);
+	}
+	return wake_path(std::move(path), 0, sep);
+}
+
+std::string_view cause_label(const query::CausePath& cause) {
+	switch (cause.evidence) {
+		case query::CauseEvidence::blocked_site:
+			return "blocked site";
+		case query::CauseEvidence::observed_wakeup:
+			return !cause.hops_wait.empty() && cause.hops_wait.front() != 0
+			               ? "observed wakeup (prior wait inferred)"
+			               : "observed wakeup";
+		case query::CauseEvidence::inferred_upstream:
+			return "inferred upstream";
+	}
+	return {};
 }
 
 // esc escapes text for HTML element content and quoted attribute values.
@@ -99,7 +120,7 @@ code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; word-break: br
 )HTML";
 
 constexpr const char* kFlameIntro = R"HTML(<h2>Flame graph</h2>
-<p class="meta">Root at the top. Below each blocked stack, <code>--</code> starts the next hop: <code>&lt;- task</code>, the stack it woke the waiter with, then <code>waiting: task</code> and where it was blocked itself. Click a frame to zoom, click the top row to reset.</p>
+<p class="meta">Root at the top. The first <code>&lt;- task</code> is the observed wakeup. Subsequent hops and <code>waiting: task</code> frames are linked by overlap. Click a frame to zoom, click the top row to reset.</p>
 <div id="flame-info"></div>
 <div id="flame"></div>
 <script id="flame-data" type="application/json">)HTML";
@@ -187,26 +208,26 @@ void write_html(std::ostream& out, const Report& r) {
 		out << "<tr><td><code>" << esc(p.comm) << "</code></td><td class=\"num\">" << esc(ms(p.total_ns))
 		    << "</td><td class=\"num\">" << std::format("{:.1f}%", p.share * 100) << "</td></tr>\n";
 	}
-	out << "</table>\n\n<h2>Top causes</h2>\n<p class=\"meta\">Each row is a blocked task followed by the tasks "
-	       "that "
-	       "woke it. The root cause is the deepest hop whose own wait explains the "
-	       "delay.</p>\n<table>\n<tr><th>wait "
-	       "path</th><th>blocked in</th><th>root cause</th><th class=\"num\">total</th><th "
+	out << "</table>\n\n<h2>Top wait paths</h2>\n<p class=\"meta\">The first wakeup was observed. Upstream links "
+	       "are inferred from overlapping waits.</p>\n<table>\n<tr><th>wait "
+	       "path</th><th>blocked in</th><th>site and evidence</th><th class=\"num\">total</th><th "
 	       "class=\"num\">count</th></tr>\n";
 	for (const auto& c : r.causes) {
-		out << "<tr><td><code>" << esc(join(c.path, " ← ")) << "</code></td><td><code>" << esc(c.blocked)
-		    << "</code></td><td><code>" << esc(c.root) << "</code></td><td class=\"num\">"
-		    << esc(ms(c.total_ns)) << "</td><td class=\"num\">" << c.count << "</td></tr>\n";
+		out << "<tr><td><code>" << esc(wake_path(c.path, 1, " ← ")) << "</code></td><td><code>"
+		    << esc(c.blocked) << "</code></td><td><code>" << cause_label(c) << ": " << esc(c.root)
+		    << "</code></td><td class=\"num\">" << esc(ms(c.total_ns)) << "</td><td class=\"num\">" << c.count
+		    << "</td></tr>\n";
 	}
 	out << "</table>\n\n";
 	if (!r.slow.empty()) {
 		out << "<h2>Slowest waits</h2>\n<table>\n<tr><th class=\"num\">duration</th><th>thread</th><th>blocked "
-		       "in</th><th>woken by</th><th>trace</th></tr>\n";
+		       "in</th><th>wake path</th><th>trace</th></tr>\n";
 		for (const auto& e : r.slow) {
 			out << "<tr><td class=\"num\">" << esc(ms(static_cast<uint64_t>((e.end - e.start).count())))
 			    << "</td><td><code>" << esc(e.comm) << "[" << e.tid << "]</code></td><td><code>"
-			    << esc(query::blocked_frame(e.stack)) << "</code></td><td><code>" << esc(chain_summary(e))
-			    << "</code></td><td><code>" << esc(e.trace_id) << "</code></td></tr>\n";
+			    << esc(query::blocked_frame(e.stack)) << "</code></td><td><code>"
+			    << esc(chain_summary(e, " ← ")) << "</code></td><td><code>" << esc(e.trace_id)
+			    << "</code></td></tr>\n";
 		}
 		out << "</table>";
 	}
@@ -246,17 +267,17 @@ void write_text(std::ostream& out, const Report& r) {
 	for (const auto& p : r.processes) {
 		b += std::format("  {:>10} {:6.1f}%  {}\n", ms(p.total_ns), p.share * 100, p.comm);
 	}
-	b += "\ntop causes (blocked task path -> root cause):\n";
+	b += "\ntop wait paths (upstream links inferred from overlapping waits):\n";
 	for (const auto& c : r.causes) {
-		b += std::format("  {:>10} {:6}x  {}\n      blocked in {}\n      root cause {}\n", ms(c.total_ns),
-		                 c.count, join(c.path, " <- "), c.blocked, c.root);
+		b += std::format("  {:>10} {:6}x  {}\n      blocked in {}\n      {}: {}\n", ms(c.total_ns), c.count,
+		                 wake_path(c.path, 1, " <- "), c.blocked, cause_label(c), c.root);
 	}
 	if (!r.slow.empty()) {
 		b += "\nslowest waits:\n";
 		for (const auto& e : r.slow) {
 			b += std::format("  {:>10}  {}[{}]  {}", ms(static_cast<uint64_t>((e.end - e.start).count())),
 			                 e.comm, e.tid, query::blocked_frame(e.stack));
-			if (auto c = chain_summary(e); !c.empty()) {
+			if (auto c = chain_summary(e, " <- "); !c.empty()) {
 				b += std::format("  <- {}", c);
 			}
 			if (!e.trace_id.empty()) {

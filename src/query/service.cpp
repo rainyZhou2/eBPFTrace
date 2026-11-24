@@ -73,29 +73,27 @@ std::vector<CausePath> collapse_causes(const std::vector<storage::ChainValue>& v
 	for (const auto& v : vals) {
 		std::vector<std::string> path{v.comm};
 		std::vector<uint64_t> waits;
+		std::string key = v.comm;
 		auto root = blocked_frame(v.stack);
+		auto evidence = CauseEvidence::blocked_site;
 		for (const auto& h : v.chain) {
 			path.push_back(h.comm);
 			waits.push_back(h.wait_ns);
-			if (h.wait_stack.empty()) {
-				root = h.comm + ": " + blocked_frame(h.wake_stack);
-				break;
-			}
-			root = h.comm + ": " + blocked_frame(h.wait_stack);
-		}
-		std::string key;
-		for (size_t i = 0; i < path.size(); i++) {
-			if (i > 0) {
-				key += '\0';
-			}
-			key += path[i];
+			key += '\0';
+			key += has_overlapping_wait(h) ? '1' : '0';
+			key += h.comm;
+			const bool has_wait_stack = !h.wait_stack.empty();
+			root = h.comm + ": " + blocked_frame(has_wait_stack ? h.wait_stack : h.wake_stack);
+			evidence = path.size() == 2 && !has_wait_stack ? CauseEvidence::observed_wakeup
+			                                               : CauseEvidence::inferred_upstream;
 		}
 		key += '\x01';
+		key += static_cast<char>(evidence);
 		key += root;
 		auto [it, inserted] = idx.try_emplace(key, out.size());
 		if (inserted) {
 			out.push_back(CausePath{path, blocked_frame(v.stack), root, 0, 0,
-			                        std::vector<uint64_t>(waits.size())});
+			                        std::vector<uint64_t>(waits.size()), evidence});
 		}
 		auto& c = out[it->second];
 		c.total_ns += v.total_ns;
@@ -234,6 +232,17 @@ Json to_json(const CausePath& c) {
 	j["path"] = c.path;
 	j["blocked_in"] = c.blocked;
 	j["root_cause"] = c.root;
+	switch (c.evidence) {
+		case CauseEvidence::blocked_site:
+			j["cause_evidence"] = "blocked_site";
+			break;
+		case CauseEvidence::observed_wakeup:
+			j["cause_evidence"] = "observed_wakeup";
+			break;
+		case CauseEvidence::inferred_upstream:
+			j["cause_evidence"] = "inferred_upstream";
+			break;
+	}
 	j["total_ns"] = c.total_ns;
 	j["count"] = c.count;
 	j["hop_wait_ns"] = c.hops_wait;

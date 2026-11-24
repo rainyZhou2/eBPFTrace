@@ -22,6 +22,8 @@ struct FlameRequest {
 	int limit = 0;
 };
 
+enum class CauseEvidence { blocked_site, observed_wakeup, inferred_upstream };
+
 struct CausePath {
 	std::vector<std::string> path;
 	std::string blocked;
@@ -29,6 +31,7 @@ struct CausePath {
 	uint64_t total_ns = 0;
 	uint64_t count = 0;
 	std::vector<uint64_t> hops_wait;
+	CauseEvidence evidence = CauseEvidence::blocked_site;
 };
 
 Json to_json(const CausePath& c);

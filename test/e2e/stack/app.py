@@ -1,7 +1,8 @@
+import ctypes
 import os
 import sys
-import threading
 import time
+from itertools import cycle
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -19,31 +20,22 @@ tracer = trace.get_tracer("orders")
 if not etrace_otel.install():
     sys.exit("libetrace_ctx not found")
 
-cache_lock = threading.Lock()
+load_cache = ctypes.CDLL(os.environ["ETRACE_LOAD_CACHE_LIBRARY"]).etrace_load_cache
+load_cache.argtypes = [ctypes.c_int]
+load_cache.restype = ctypes.c_int64
 
 
-def refresher():
-    while True:
-        with cache_lock:
-            time.sleep(0.08)
-        time.sleep(0.02)
-
-
-def handle(n):
+def handle(scenario):
     with tracer.start_as_current_span("GET /orders") as root:
-        root.set_attribute("request.n", n)
+        root.set_attribute("load_cache.scenario", scenario)
         with tracer.start_as_current_span("load_cache"):
-            with cache_lock:
-                pass
+            gate_to_unlock_ns = load_cache(int(scenario == "overlap"))
+        root.set_attribute("load_cache.gate_to_unlock_ns", gate_to_unlock_ns)
         with tracer.start_as_current_span("render"):
             sum(range(20000))
-        ctx = root.get_span_context()
-        print(f"{ctx.trace_id:032x}", flush=True)
+    print(f"{scenario} {root.get_span_context().trace_id:032x}", flush=True)
 
 
-threading.Thread(target=refresher, daemon=True).start()
-n = 0
-while True:
-    handle(n)
-    n += 1
+for scenario in cycle(("handoff", "overlap")):
+    handle(scenario)
     time.sleep(0.05)

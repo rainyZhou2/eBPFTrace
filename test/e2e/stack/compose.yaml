@@ -44,16 +44,21 @@ services:
     depends_on: [collector]
 
   app:
-    image: etrace-py-otel
+    image: etrace-e2e-app:local
+    build:
+      context: .
+      dockerfile: app.Dockerfile
     # The library is copied onto the container filesystem: uprobes cannot
     # attach to files bind-mounted from a macOS host.
     command: ["sh", "-c", "mkdir -p /opt/etrace && cp /mnt/etrace/libetrace_ctx.so /opt/etrace/ && exec python -u /app/app.py"]
     environment:
       OTLP_ENDPOINT: http://jaeger:4318/v1/traces
       ETRACE_CTX_LIBRARY: /opt/etrace/libetrace_ctx.so
+      ETRACE_LOAD_CACHE_LIBRARY: /mnt/etrace/libetrace_load_cache.so
       PYTHONPATH: /opt/etrace/python
     volumes:
       - ./app.py:/app/app.py:ro
       - ../../../test/scenario/libetrace_ctx.so:/mnt/etrace/libetrace_ctx.so:ro
+      - ../../../test/scenario/libetrace_load_cache.so:/mnt/etrace/libetrace_load_cache.so:ro
       - ../../../sdk/python:/opt/etrace/python:ro
     depends_on: [agent, jaeger]

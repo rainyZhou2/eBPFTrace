@@ -4,6 +4,10 @@
 
 namespace etrace::query {
 
+bool has_overlapping_wait(const storage::Hop& h) {
+	return h.wait_ns != 0 || !h.wait_stack.empty();
+}
+
 Json to_json(const storage::Hop& h) {
 	Json j;
 	j["comm"] = h.comm;
@@ -18,6 +22,9 @@ Json to_json(const storage::Hop& h) {
 	}
 	if (h.wait_ns != 0) {
 		j["wait_ns"] = h.wait_ns;
+	}
+	if (has_overlapping_wait(h)) {
+		j["wait_evidence"] = "inferred";
 	}
 	if (!h.trace_id.empty()) {
 		j["trace_id"] = h.trace_id;
@@ -50,7 +57,9 @@ Json to_json(const storage::Event& e) {
 	if (!e.chain.empty()) {
 		auto& c = j["chain"] = Json::array();
 		for (const auto& h : e.chain) {
-			c.push_back(to_json(h));
+			auto hop = to_json(h);
+			hop["wake_evidence"] = c.empty() ? "observed" : "inferred";
+			c.push_back(std::move(hop));
 		}
 	}
 	j["start"] = format_rfc3339nano(e.start);

@@ -67,7 +67,7 @@ make builder   # once
 make e2e
 ```
 
-`make e2e` starts the agent, collector, query service, ClickHouse, Jaeger, and an instrumented Python service with Docker Compose (`test/e2e/stack`). It waits for traced off-CPU events, checks one trace end to end, and tears the stack down. To keep it running, use `docker compose up -d` in `test/e2e/stack`; the web UI is then at http://127.0.0.1:18080 and Jaeger at http://127.0.0.1:16686.
+`make e2e` starts the agent, collector, query service, ClickHouse, Jaeger, and an instrumented Python service with Docker Compose (`test/e2e/stack`). It checks two `load_cache` traces end to end: a lock handoff driven by a readiness signal and an overlapping signal that leaves an independent unlock deadline unchanged. To keep the stack running, use `docker compose up -d --build` in `test/e2e/stack` after `make build scenarios e2e-scenario`. The web UI is at http://127.0.0.1:18080 and Jaeger is at http://127.0.0.1:16686.
 
 The e2e stack needs a privileged Docker host with BPF access. It is not part of the hosted CI; see [Project status and limitations](#project-status-and-limitations).
 
@@ -274,12 +274,13 @@ All endpoints accept the same filters: `from`, `to`, `node`, `comm`, `pid`, `con
 | Endpoint | Returns |
 |---|---|
 | `GET /api/v1/offcpu/flamegraph` | Flame graph as JSON, collapsed stacks (`format=collapsed`), or gzip pprof (`format=pprof`); `depth=0..4` |
-| `GET /api/v1/offcpu/causes` | Blocking time grouped by task path, ending at the deepest hop whose wait explains the delay |
+| `GET /api/v1/offcpu/causes` | Blocking time grouped by task path, with a location and its evidence type |
 | `GET /api/v1/offcpu/events` | Individual waits with stacks, wakeup chains, and trace IDs; filters `trace_id`, `span_id`, `min_duration`, `limit` |
 | `GET /api/v1/traces/{trace_id}/offcpu` | Per-span `offcpu_ns` (including descendants) and `self_offcpu_ns`, the events behind them, and the causes |
 
 - `namespace` and `pod` come from the agent's `container` processor: the pod UID is read from the task's cgroup, and pod name, namespace, and container name from the container runtime's state on the host (containerd and CRI-O OCI configs, Docker labels), reached through `/proc/1/root`. No Kubernetes API access is needed, so pod labels are not available.
 - `flamegraph`: each hop is stacked above a `--` frame as `<- comm`, then its wake stack, then `waiting: comm` and its wait stack. The pprof profile uses sample types `off_cpu/nanoseconds` and `waits/count` for `go tool pprof`, speedscope, or Pyroscope; `etrace doctor -pprof file` writes one too.
+- Event hops set `wake_evidence` to `observed` for the direct scheduler wakeup and `inferred` for upstream hops linked by overlap. `wait_evidence: inferred` describes the link from a waker's previous wait to the reported wait. The causes response keeps `root_cause` as the location string for existing clients and adds `cause_evidence` (`blocked_site`, `observed_wakeup`, or `inferred_upstream`).
 - Without a trace backend, trace events come back unattributed and `partial` explains why.
 
 ### Exporting to Pyroscope

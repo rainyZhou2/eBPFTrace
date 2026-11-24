@@ -512,6 +512,7 @@ void Store::write_batch(const model::Batch& b) {
 std::vector<ChainValue> Store::offcpu_chains(const ChainQuery& q) {
 	auto w = build_where(q.filter, "window_start", "window_end");
 	int depth = q.depth < 0 || q.depth > 16 ? 16 : q.depth;
+	// An overlapping wait can have a duration even when stack capture failed.
 	auto sql = std::format(R"(SELECT toString(comm) AS c, stack,
 	CAST(arraySlice(chain_comm, 1, {0}) AS Array(String)) AS cc,
 	arraySlice(chain_wake_stack, 1, {0}) AS cwk,
@@ -519,7 +520,8 @@ std::vector<ChainValue> Store::offcpu_chains(const ChainQuery& q) {
 	sumForEach(arraySlice(chain_wait_ns, 1, {0})) AS cwn,
 	sum(blocked_ns), sum(count)
 FROM {1} {2}
-GROUP BY c, stack, cc, cwk, cwt
+GROUP BY c, stack, cc, cwk, cwt,
+	arrayMap(i -> chain_wait_ns[i] > 0 OR notEmpty(cwt[i]), arrayEnumerate(cc))
 ORDER BY 7 DESC
 LIMIT {3})",
 	                       depth, samples_, w.sql(), limit_of(q.limit));

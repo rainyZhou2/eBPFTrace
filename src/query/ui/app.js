@@ -124,8 +124,13 @@
 
   function loadCauses() {
     return getJSON("/api/v1/offcpu/causes", params({ limit: "100" })).then(function (body) {
+      var labels = { blocked_site: "blocked site", observed_wakeup: "observed wakeup", inferred_upstream: "inferred upstream" };
       fill("causes", body.causes, function (c) {
-        return [{ text: c.path.join(" ← "), code: true }, { text: c.blocked_in, code: true }, { text: c.root_cause, code: true },
+        var path = c.path.map(function (task, i) { return task + (i === 0 ? "" : i === 1 ? " (observed)" : " (inferred)"); });
+        var evidence = labels[c.cause_evidence];
+        if (c.cause_evidence === "observed_wakeup" && c.hop_wait_ns[0] > 0) evidence += " (prior wait inferred)";
+        return [{ text: path.join(" ← "), code: true }, { text: c.blocked_in, code: true },
+          { text: evidence + ": " + c.root_cause, code: true },
           { text: ms(c.total_ns), num: true }, { text: c.count, num: true }];
       });
     });
@@ -143,12 +148,13 @@
       lines.push("stream " + e.gpu_stream + ", " + e.gpu_launches + " kernels queued since its previous wait");
     }
     lines = lines.concat(["", "blocked in:"], e.stack.map(function (f) { return "  " + f; }));
-    (e.chain || []).forEach(function (h, i) {
-      lines.push("", "hop " + (i + 1) + ": woken by " + h.comm + (h.wait_ns ? " (which itself waited " + ms(h.wait_ns) + ")" : ""));
+    (e.chain || []).forEach(function (h) {
+      var observed = h.wake_evidence === "observed";
+      lines.push("", (observed ? "Observed wakeup by " : "Inferred upstream hop ") + h.comm);
       (h.wake_stack || []).forEach(function (f) { lines.push("  " + f); });
-      if (h.wait_stack && h.wait_stack.length) {
-        lines.push("  waiting in:");
-        h.wait_stack.forEach(function (f) { lines.push("    " + f); });
+      if (h.wait_evidence === "inferred") {
+        lines.push("  Overlapping prior wait (inferred link)" + (h.wait_ns ? ": " + ms(h.wait_ns) : ""));
+        (h.wait_stack || []).forEach(function (f) { lines.push("    " + f); });
       }
     });
     if (e.trace_id) lines.push("", "trace " + e.trace_id + " span " + e.span_id);
@@ -162,7 +168,8 @@
       fill("events", evs, function (e) {
         return [{ text: new Date(e.start).toLocaleTimeString() }, { text: ms((Date.parse(e.end) - Date.parse(e.start)) * 1e6), num: true },
           { text: e.comm + "[" + e.tid + "]", code: true }, { text: e.namespace ? e.namespace + "/" + e.pod : "" },
-          { text: (e.chain || []).map(function (h) { return h.comm; }).join(" ← "), code: true }, { text: e.trace_id || "", code: true }];
+          { text: (e.chain || []).map(function (h) { return h.comm + " (" + h.wake_evidence + ")"; }).join(" ← "), code: true },
+          { text: e.trace_id || "", code: true }];
       }, eventDetail);
     });
   }

@@ -11,7 +11,7 @@
   <span class="brand">eTrace</span>
   <nav id="tabs">
     <button data-tab="flame" class="active">Flame graph</button>
-    <button data-tab="causes">Causes</button>
+    <button data-tab="causes">Wait paths</button>
     <button data-tab="events">Events</button>
     <button data-tab="trace">Trace</button>
   </nav>
@@ -50,16 +50,17 @@
       <a id="dl-pprof">pprof</a> <a id="dl-collapsed">collapsed</a>
     </div>
     <div id="flame-graph"></div>
+    <p class="meta">The first wakeup is observed. Upstream hops and prior waits are linked by time overlap.</p>
   </section>
 
   <section id="causes" class="tab">
-    <p class="meta">Blocking time per wait path. The root cause is the deepest hop whose own wait explains the delay.</p>
-    <table><thead><tr><th>wait path</th><th>blocked in</th><th>root cause</th><th class="num">total</th><th class="num">count</th></tr></thead><tbody></tbody></table>
+    <p class="meta">The first wakeup was observed. Upstream links are inferred from overlapping waits.</p>
+    <table><thead><tr><th>wait path</th><th>blocked in</th><th>site and evidence</th><th class="num">total</th><th class="num">count</th></tr></thead><tbody></tbody></table>
   </section>
 
   <section id="events" class="tab">
     <p class="meta">Single waits that carried a trace context or exceeded the agent's slow threshold. Click a row for its stacks.</p>
-    <table><thead><tr><th>start</th><th class="num">duration</th><th>thread</th><th>pod</th><th>woken by</th><th>trace</th></tr></thead><tbody></tbody></table>
+    <table><thead><tr><th>start</th><th class="num">duration</th><th>thread</th><th>pod</th><th>wake path</th><th>trace</th></tr></thead><tbody></tbody></table>
   </section>
 
   <section id="trace" class="tab">

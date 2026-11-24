@@ -8,6 +8,7 @@ namespace etrace::query {
 
 using Json = nlohmann::ordered_json;
 
+bool has_overlapping_wait(const storage::Hop& h);
 Json to_json(const storage::Hop& h);
 Json to_json(const storage::Event& e);
 Json to_json(const std::vector<storage::Event>& events);

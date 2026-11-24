@@ -67,7 +67,7 @@ make builder   # 只需执行一次
 make e2e
 ```
 
-`make e2e` 用 Docker Compose（`test/e2e/stack`）启动 agent、collector、query、ClickHouse、Jaeger 和一个已接入的 Python 服务。它会等待带 trace 的 off-CPU 事件，跑通一条完整 trace，然后清理环境。如果想保留环境继续观察，在 `test/e2e/stack` 下执行 `docker compose up -d`；Web UI 在 http://127.0.0.1:18080，Jaeger 在 http://127.0.0.1:16686。
+`make e2e` 用 Docker Compose（`test/e2e/stack`）启动 agent、collector、query、ClickHouse、Jaeger 和一个已接入的 Python 服务。它会验证两条 `load_cache` trace，分别覆盖收到信号后释放锁的真实交接，以及信号虽唤醒持锁线程、锁仍按独立截止时间释放的场景。若要保留环境，先执行 `make build scenarios e2e-scenario`，再到 `test/e2e/stack` 下执行 `docker compose up -d --build`。Web UI 在 http://127.0.0.1:18080，Jaeger 在 http://127.0.0.1:16686。
 
 e2e 需要一台能访问 BPF 的特权 Docker 主机，不在托管 CI 中运行；参见[项目状态与已知限制](#项目状态与已知限制)。
 
@@ -274,12 +274,13 @@ query 服务在 HTTP 端口的 `/` 提供浏览器 UI：过滤器（时间范围
 | Endpoint | 返回 |
 |---|---|
 | `GET /api/v1/offcpu/flamegraph` | 火焰图：JSON、collapsed stacks（`format=collapsed`）或 gzip pprof（`format=pprof`）；`depth=0..4` |
-| `GET /api/v1/offcpu/causes` | 按任务路径归并的阻塞时间，终止于最能解释延迟的最深一跳 |
+| `GET /api/v1/offcpu/causes` | 按任务路径归并的阻塞时间，以及每条路径的相关位置和证据类型 |
 | `GET /api/v1/offcpu/events` | 单次等待，含栈、唤醒链和 trace ID；支持 `trace_id`、`span_id`、`min_duration`、`limit` |
 | `GET /api/v1/traces/{trace_id}/offcpu` | 每个 span 的 `offcpu_ns`（含后代）和 `self_offcpu_ns`、背后的事件与 causes |
 
 - `namespace` 和 `pod` 来自 agent 的 `container` processor：pod UID 从任务 cgroup 读取，pod 名、namespace 和容器名从宿主上的容器运行时状态（containerd/CRI-O OCI 配置、Docker labels）读取，入口是 `/proc/1/root`。不需要访问 Kubernetes API，因此拿不到 pod labels。
 - `flamegraph`：每一跳以 `--` 帧叠在下面，先是 `<- comm`，然后是它的唤醒栈，再是 `waiting: comm` 和它的等待栈。pprof profile 的 sample type 为 `off_cpu/nanoseconds` 与 `waits/count`，可用于 `go tool pprof`、speedscope 或 Pyroscope；`etrace doctor -pprof file` 也会写一份。
+- 单次等待的直接唤醒标为 `wake_evidence: observed`，按重叠关联的上游跳标为 `wake_evidence: inferred`。`wait_evidence: inferred` 表示唤醒者的上一段等待与本次等待存在推断关联。causes 响应沿用 `root_cause` 作为位置字段，并通过 `cause_evidence` 标明阻塞点、观测到的唤醒或推断的上游等待。
 - 没有 trace 后端时，trace 事件会以未归属形式返回，`partial` 字段说明原因。
 
 ### 导出到 Pyroscope

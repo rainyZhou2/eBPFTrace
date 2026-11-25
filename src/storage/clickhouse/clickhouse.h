@@ -55,6 +55,7 @@ public:
 	void write_batch(const model::Batch& b) override;
 	std::vector<ChainValue> offcpu_chains(const ChainQuery& q) override;
 	std::vector<Event> events(const EventQuery& q) override;
+	void visit_events(const EventQuery& q, const EventVisitor& visit) override;
 	void ping(Duration timeout) override;
 	void close() override;
 

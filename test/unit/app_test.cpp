@@ -11,6 +11,7 @@
 #include "doctor/report.h"
 #include "doctor/session.h"
 #include "platform/flags.h"
+#include "query/service.h"
 #include "storage/clickhouse/clickhouse.h"
 #include "storage/memory/memory.h"
 #include "testutil.h"
@@ -377,6 +378,25 @@ TEST(ClickHouse, MigrateExistingTablesAndQueryPods) {
 	EXPECT_EQ(events[0].chain[0].span_id, "00f067aa0ba902b7");
 	eq.filter = miss;
 	EXPECT_TRUE(s.events(eq).empty()) << "namespace filter ignored";
+
+	model::Batch later{
+	        .id = "later-wait", .resource = b.resource, .window_start = now - 500ms, .window_end = now + 1s};
+	later.events = {{.task = model::Task{1, 2, "api", "", pod},
+	                 .stack = testing::frames({"disk_read"}),
+	                 .start = later.window_start,
+	                 .end = later.window_end,
+	                 .reason = model::OffCPUReason::blocked,
+	                 .trace = tc}};
+	s.write_batch(later);
+	eq.filter = hit;
+	eq.limit = 1;
+	EXPECT_EQ(s.events(eq).size(), 1u);
+	const auto report = query::Service(s).trace_report(nullptr, eq.trace_id, hit, eq.limit);
+	EXPECT_EQ(report.offcpu_total_ns, 2'500'000'000u);
+	ASSERT_EQ(report.unattributed.size(), 1u);
+	EXPECT_EQ(report.unattributed[0].start, b.events[0].start);
+	ASSERT_EQ(report.causes.size(), 2u);
+	EXPECT_EQ(report.causes[0].root, "disk_read");
 
 	auto observed = b.offcpu.front();
 	observed.task.comm = "cache";

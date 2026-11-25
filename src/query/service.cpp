@@ -67,16 +67,19 @@ std::vector<CausePath> Service::causes(const storage::Filter& f, int depth, int 
 	return collapse_causes(reader_.offcpu_chains(storage::ChainQuery{f, depth, 0}), limit);
 }
 
-std::vector<CausePath> collapse_causes(const std::vector<storage::ChainValue>& vals, int limit) {
-	std::unordered_map<std::string, size_t> idx;
-	std::vector<CausePath> out;
-	for (const auto& v : vals) {
-		std::vector<std::string> path{v.comm};
+namespace {
+
+class CausePaths {
+public:
+	void add(const std::string& comm, const std::vector<std::string>& stack, const std::vector<storage::Hop>& chain,
+	         uint64_t total_ns, uint64_t count) {
+		std::vector<std::string> path{comm};
 		std::vector<uint64_t> waits;
-		std::string key = v.comm;
-		auto root = blocked_frame(v.stack);
+		std::string key = comm;
+		auto blocked = blocked_frame(stack);
+		auto root = blocked;
 		auto evidence = CauseEvidence::blocked_site;
-		for (const auto& h : v.chain) {
+		for (const auto& h : chain) {
 			path.push_back(h.comm);
 			waits.push_back(h.wait_ns);
 			key += '\0';
@@ -90,20 +93,38 @@ std::vector<CausePath> collapse_causes(const std::vector<storage::ChainValue>& v
 		key += '\x01';
 		key += static_cast<char>(evidence);
 		key += root;
-		auto [it, inserted] = idx.try_emplace(key, out.size());
+		auto [it, inserted] = indices_.try_emplace(std::move(key), paths_.size());
 		if (inserted) {
-			out.push_back(CausePath{path, blocked_frame(v.stack), root, 0, 0,
-			                        std::vector<uint64_t>(waits.size()), evidence});
+			paths_.push_back(CausePath{std::move(path), std::move(blocked), std::move(root), 0, 0,
+			                           std::vector<uint64_t>(waits.size()), evidence});
 		}
-		auto& c = out[it->second];
-		c.total_ns += v.total_ns;
-		c.count += v.count;
+		auto& c = paths_[it->second];
+		c.total_ns += total_ns;
+		c.count += count;
 		for (size_t i = 0; i < waits.size() && i < c.hops_wait.size(); i++) {
 			c.hops_wait[i] += waits[i];
 		}
 	}
-	std::stable_sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.total_ns > b.total_ns; });
-	return storage::limit(std::move(out), limit);
+
+	std::vector<CausePath> finish(int limit) && {
+		std::stable_sort(paths_.begin(), paths_.end(),
+		                 [](const auto& a, const auto& b) { return a.total_ns > b.total_ns; });
+		return storage::limit(std::move(paths_), limit);
+	}
+
+private:
+	std::unordered_map<std::string, size_t> indices_;
+	std::vector<CausePath> paths_;
+};
+
+}  // namespace
+
+std::vector<CausePath> collapse_causes(const std::vector<storage::ChainValue>& vals, int limit) {
+	CausePaths causes;
+	for (const auto& v : vals) {
+		causes.add(v.comm, v.stack, v.chain, v.total_ns, v.count);
+	}
+	return std::move(causes).finish(limit);
 }
 
 std::string blocked_frame(const std::vector<std::string>& stack) {
@@ -157,16 +178,6 @@ Duration clip(Time s, Time e, Time lo, Time hi) {
 	return e - s;
 }
 
-std::vector<CausePath> causes_from_events(const std::vector<storage::Event>& events) {
-	std::vector<storage::ChainValue> vals;
-	vals.reserve(events.size());
-	for (const auto& e : events) {
-		vals.push_back(storage::ChainValue{e.comm, e.stack, e.chain,
-		                                   static_cast<uint64_t>((e.end - e.start).count()), 1});
-	}
-	return collapse_causes(vals, 0);
-}
-
 }  // namespace
 
 TraceReport Service::trace_report(tracing::Backend* backend, const std::string& trace_id, const storage::Filter& f,
@@ -174,26 +185,17 @@ TraceReport Service::trace_report(tracing::Backend* backend, const std::string& 
 	storage::EventQuery eq;
 	eq.filter = f;
 	eq.trace_id = trace_id;
-	eq.limit = limit;
-	auto events = reader_.events(eq);
 	TraceReport rep;
 	rep.trace_id = trace_id;
-	rep.causes = causes_from_events(events);
-	for (const auto& e : events) {
-		rep.offcpu_total_ns += static_cast<uint64_t>((e.end - e.start).count());
-	}
+	std::vector<tracing::Span> spans;
 	if (backend == nullptr) {
 		rep.partial = "no trace backend configured";
-		rep.unattributed = std::move(events);
-		return rep;
-	}
-	std::vector<tracing::Span> spans;
-	try {
-		spans = backend->trace(trace_id);
-	} catch (const std::exception& e) {
-		rep.partial = std::string("trace backend: ") + e.what();
-		rep.unattributed = std::move(events);
-		return rep;
+	} else {
+		try {
+			spans = backend->trace(trace_id);
+		} catch (const std::exception& e) {
+			rep.partial = std::string("trace backend: ") + e.what();
+		}
 	}
 	std::unordered_map<std::string, size_t> idx;
 	rep.spans.reserve(spans.size());
@@ -201,17 +203,28 @@ TraceReport Service::trace_report(tracing::Backend* backend, const std::string& 
 		rep.spans.push_back(SpanOffCPU{spans[i], static_cast<uint64_t>(spans[i].duration().count()), 0, 0, {}});
 		idx[spans[i].span_id] = i;
 	}
-	for (auto& e : events) {
+	CausePaths causes;
+	size_t detail_count = 0;
+	reader_.visit_events(eq, [&](storage::Event e) {
+		const auto duration = static_cast<uint64_t>((e.end - e.start).count());
+		rep.offcpu_total_ns += duration;
+		causes.add(e.comm, e.stack, e.chain, duration, 1);
+		const bool keep_detail = limit <= 0 || detail_count < static_cast<size_t>(limit);
+		detail_count += keep_detail;
 		auto it = idx.find(e.span_id);
 		if (it == idx.end()) {
-			rep.unattributed.push_back(std::move(e));
-			continue;
+			if (keep_detail) {
+				rep.unattributed.push_back(std::move(e));
+			}
+			return;
 		}
 		size_t i = it->second;
 		auto d = static_cast<uint64_t>(
 		        clip(e.start, e.end, rep.spans[i].span.start, rep.spans[i].span.end).count());
 		rep.spans[i].self_offcpu_ns += d;
-		rep.spans[i].events.push_back(std::move(e));
+		if (keep_detail) {
+			rep.spans[i].events.push_back(std::move(e));
+		}
 		size_t j = i;
 		for (size_t seen = 0; seen <= spans.size(); seen++) {
 			rep.spans[j].offcpu_ns += d;
@@ -221,7 +234,8 @@ TraceReport Service::trace_report(tracing::Backend* backend, const std::string& 
 			}
 			j = p->second;
 		}
-	}
+	});
+	rep.causes = std::move(causes).finish(0);
 	std::stable_sort(rep.spans.begin(), rep.spans.end(),
 	                 [](const auto& a, const auto& b) { return a.span.start < b.span.start; });
 	return rep;

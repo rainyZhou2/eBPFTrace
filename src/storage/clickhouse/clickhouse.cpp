@@ -561,6 +561,14 @@ LIMIT {3})",
 }
 
 std::vector<Event> Store::events(const EventQuery& q) {
+	auto bounded = q;
+	bounded.limit = limit_of(q.limit);
+	std::vector<Event> out;
+	visit_events(bounded, [&](Event e) { out.push_back(std::move(e)); });
+	return out;
+}
+
+void Store::visit_events(const EventQuery& q, const EventVisitor& visit) {
 	auto w = build_where(q.filter, "start_time", "end_time");
 	if (!q.trace_id.empty()) {
 		w.conds.push_back("trace_id = " + w.param("String", q.trace_id));
@@ -576,9 +584,11 @@ std::vector<Event> Store::events(const EventQuery& q) {
 	toString(container), stack, CAST(chain_comm AS Array(String)), chain_pid, chain_wake_stack, chain_wait_stack,
 	chain_wait_ns, chain_trace_id, chain_span_id, toUnixTimestamp64Nano(start_time), toUnixTimestamp64Nano(end_time),
 	toString(reason), trace_id, span_id, gpu_stream, gpu_launches
-FROM {} {} ORDER BY start_time LIMIT {})",
-	        events_, w.sql(), limit_of(q.limit));
-	std::vector<Event> out;
+FROM {} {} ORDER BY start_time)",
+	        events_, w.sql());
+	if (q.limit > 0) {
+		sql += std::format(" LIMIT {}", q.limit);
+	}
 	ch::Query query(sql);
 	query.SetParams(w.params);
 	query.OnData([&](const ch::Block& b) {
@@ -614,7 +624,7 @@ FROM {} {} ORDER BY start_time LIMIT {})",
 			e.span_id = string_at(b[20], r);
 			e.gpu_stream = number_at<uint64_t>(b[21], r);
 			e.gpu_launches = number_at<uint32_t>(b[22], r);
-			out.push_back(std::move(e));
+			visit(std::move(e));
 		}
 	});
 	auto c = acquire();
@@ -624,7 +634,6 @@ FROM {} {} ORDER BY start_time LIMIT {})",
 		throw Error(std::format("query events: {}", e.what()));
 	}
 	c.done();
-	return out;
 }
 
 void Store::ping(Duration) {

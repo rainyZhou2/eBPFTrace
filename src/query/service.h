@@ -73,8 +73,8 @@ public:
 	std::vector<CausePath> causes(const storage::Filter& f, int depth, int limit);
 	// trace_report attributes every off-CPU interval recorded under a trace
 	// id to the span that was active on the thread, and rolls the time up to
-	// ancestors. Without a backend, or when it fails, events are returned
-	// unattributed and partial explains why.
+	// ancestors. The limit applies only to event details. Without a backend,
+	// or when it fails, event details are unattributed and partial explains why.
 	TraceReport trace_report(tracing::Backend* backend, const std::string& trace_id, const storage::Filter& f,
 	                         int limit);
 	storage::Reader& reader() { return reader_; }

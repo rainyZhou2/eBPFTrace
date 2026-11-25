@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -97,11 +98,15 @@ struct EventQuery {
 	int limit = 0;
 };
 
+using EventVisitor = std::function<void(Event)>;
+
 class Reader {
 public:
 	virtual ~Reader() = default;
 	virtual std::vector<ChainValue> offcpu_chains(const ChainQuery& q) = 0;
 	virtual std::vector<Event> events(const EventQuery& q) = 0;
+	// Visit matching events in start-time order. A zero limit visits all matches.
+	virtual void visit_events(const EventQuery& q, const EventVisitor& visit) = 0;
 };
 
 class Store : public Writer, public Reader {

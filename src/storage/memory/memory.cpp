@@ -165,4 +165,10 @@ std::vector<Event> Store::events(const EventQuery& q) {
 	return limit(std::move(out), q.limit);
 }
 
+void Store::visit_events(const EventQuery& q, const EventVisitor& visit) {
+	for (auto& e : events(q)) {
+		visit(std::move(e));
+	}
+}
+
 }  // namespace etrace::storage::memory

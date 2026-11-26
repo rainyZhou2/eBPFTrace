@@ -67,9 +67,9 @@ make builder   # once
 make e2e
 ```
 
-`make e2e` starts the agent, collector, query service, ClickHouse, Jaeger, and an instrumented Python service with Docker Compose (`test/e2e/stack`). It checks two `load_cache` traces end to end: a lock handoff driven by a readiness signal and an overlapping signal that leaves an independent unlock deadline unchanged. To keep the stack running, use `docker compose up -d --build` in `test/e2e/stack` after `make build scenarios e2e-scenario`. The web UI is at http://127.0.0.1:18080 and Jaeger is at http://127.0.0.1:16686.
+`make e2e` starts the agent, collector, query service, ClickHouse, Jaeger, and an instrumented Python service with Docker Compose (`test/e2e/stack`). It checks two `load_cache` traces end to end: a lock handoff driven by a readiness signal and an overlapping signal that leaves an independent unlock deadline unchanged. To keep the stack running, use `docker compose up -d --build` in `test/e2e/stack` after `make build scenarios e2e-scenario`. The web UI is at http://127.0.0.1:18080 (HTTP Basic `e2e`/`e2e`) and Jaeger is at http://127.0.0.1:16686.
 
-The e2e stack needs a privileged Docker host with BPF access. It is not part of the hosted CI; see [Project status and limitations](#project-status-and-limitations).
+The e2e stack needs a privileged Docker host with BPF access. CI runs the same stack on `ubuntu-24.04`; a runner that blocks privileged containers or BPF must run it on a self-hosted host instead.
 
 ## Requirements
 
@@ -83,7 +83,7 @@ The e2e stack needs a privileged Docker host with BPF access. It is not part of 
 
 ### Build host
 
-- Docker. The builder image contains the compiler, clang for BPF, and every pinned dependency.
+- Docker with Buildx (Docker Desktop, or the `docker-buildx-plugin`). The builder image contains the compiler, clang for BPF, and every pinned dependency.
 - gRPC 1.80 or later. The builder image pins 1.81; distribution packages such as Debian 13's 1.51 are too old for the TLS credentials code in `src/platform`.
 
 ## Build
@@ -100,7 +100,7 @@ make fmt       # clang-format src and test (fmt-check verifies only)
 ```
 
 - The BPF programs are compiled for the build host's architecture and embedded in the binary. An amd64 binary is built on an amd64 builder; use an arm64 builder for arm64.
-- The builder pulls `debian:trixie`, `deb.debian.org`, and `github.com` by default. `BASE_IMAGE`, `APT_MIRROR`, `GITHUB_PROXY`, and `SOURCEWARE_MIRROR` route the same steps through mirrors, for example `make builder BUILDER_BUILD_ARGS='--build-arg GITHUB_PROXY=https://gh-proxy.com'`. `build/vcpkg-fetch.sh` applies the last two to vcpkg downloads as well.
+- The builder pulls `debian:trixie`, `deb.debian.org`, and `github.com` by default. `BASE_IMAGE`, `APT_MIRROR`, `GITHUB_PROXY`, `SOURCEWARE_MIRROR`, and `GNU_MIRROR` route the same steps through mirrors, for example `make builder BUILDER_BUILD_ARGS='--build-arg GITHUB_PROXY=https://gh-proxy.com'`. `build/vcpkg-fetch.sh` applies the last two to vcpkg downloads as well.
 - Sanitizer builds are supported: `make build CMAKE_FLAGS=-DETRACE_SANITIZE=address,undefined` (or `thread`).
 - `make bpf-ide-headers` and `make ide` copy the Linux/libbpf headers and the compilation database out of the builder for clangd.
 
@@ -203,20 +203,28 @@ One binary provides every component: `etrace agent | collector | query | doctor 
 
 ### Kubernetes
 
-`deploy/k8s` contains the namespace and secret, the agent DaemonSet, and the collector and query Deployments with their Services, PDB, and HPA. The manifests expect an existing ClickHouse at `clickhouse.etrace.svc:9000` and Jaeger query at `http://jaeger-query.observability.svc:16686`; change the `env` entries to match your cluster.
+`deploy/k8s` contains the namespace, the agent DaemonSet, and the collector and query Deployments with their Services, PDB, and HPA. The manifests expect an existing ClickHouse at `clickhouse.etrace.svc:9000` and Jaeger query at `http://jaeger-query.observability.svc:16686`; change the `env` entries to match your cluster.
 
 ```sh
-make image                                   # multi-arch runtime image etrace:<version>
-# edit deploy/k8s/namespace.yaml: replace the change-me values in etrace-secrets
+make image                                   # runtime image etrace:<version> and etrace:latest
 kubectl apply -f deploy/k8s/namespace.yaml
+kubectl -n etrace create secret generic etrace-secrets \
+  --from-literal=ingest-token="$(openssl rand -hex 32)" \
+  --from-literal=query-token="$(openssl rand -hex 32)" \
+  --from-literal=query-user=etrace \
+  --from-literal=query-password="$(openssl rand -hex 16)" \
+  --from-literal=clickhouse-user=default \
+  --from-literal=clickhouse-password='<clickhouse-password>'
 kubectl apply -f deploy/k8s/
 ```
+
+The collector refuses to start without `tokens`; the agent refuses to send a token over plaintext unless its TLS block sets `allow_insecure: true`. The query service requires a bearer token or HTTP Basic credentials for `/api/*`; the browser UI prompts for Basic auth when `query-user` and `query-password` are configured.
 
 The collector creates the ClickHouse tables on start (`auto_migrate: true`); the query service does not. Set `CLICKHOUSE_CLUSTER` to a cluster name to create replicated and distributed tables.
 
 ### Configuration
 
-Each service reads `/etc/etrace/<command>.yaml` by default; pass `-config path` to override. `${VAR}` references are expanded from the environment, so secrets stay out of config files. Reference configs are in `configs/`:
+Each service reads `/etc/etrace/<command>.yaml` by default; pass `-config path` to override. `${VAR}` references are expanded from the environment after YAML parsing; use `${VAR:?message}` for values that must be present. Reference configs are in `configs/`:
 
 | File | Purpose |
 |---|---|
@@ -282,6 +290,7 @@ All endpoints accept the same filters: `from`, `to`, `node`, `comm`, `pid`, `con
 - `flamegraph`: each hop is stacked above a `--` frame as `<- comm`, then its wake stack, then `waiting: comm` and its wait stack. The pprof profile uses sample types `off_cpu/nanoseconds` and `waits/count` for `go tool pprof`, speedscope, or Pyroscope; `etrace doctor -pprof file` writes one too.
 - Event hops set `wake_evidence` to `observed` for the direct scheduler wakeup and `inferred` for upstream hops linked by overlap. `wait_evidence: inferred` describes the link from a waker's previous wait to the reported wait. The causes response keeps `root_cause` as the location string for existing clients and adds `cause_evidence` (`blocked_site`, `observed_wakeup`, or `inferred_upstream`).
 - Without a trace backend, trace events come back unattributed and `partial` explains why.
+- API requests are rate limited per client (`rate_limit`). ClickHouse reads carry `max_execution_time`, `max_memory_usage`, and `max_rows_to_group_by` from `storage.options`; a query that exceeds them fails instead of exhausting a replica.
 
 ### Exporting to Pyroscope
 
@@ -312,6 +321,8 @@ test/kernel/qemu/run.sh --kernel-image ubuntu:22.04 --expect 5.15
 `.github/workflows/ci.yml` runs:
 
 - unit tests on amd64 and arm64;
+- ClickHouse driver tests against ClickHouse 24.8;
+- the full e2e stack on `ubuntu-24.04` with privileged Docker and BPF;
 - the kernel suite in QEMU on Ubuntu 5.15 and 6.8, with two vCPUs and KVM when the runner exposes `/dev/kvm` (hosted runners use TCG).
 
 The release workflow (`.github/workflows/release.yml`) turns a `v*` tag into checksummed `etrace-linux-amd64` and `etrace-linux-arm64` artifacts with a GitHub release.
@@ -368,14 +379,13 @@ Sources, processors, exporters, storage drivers, and trace backends are selected
 
 ## Project status and limitations
 
-eTrace is pre-1.0. The CI currently covers unit tests on amd64 and arm64 and the BPF kernel suite on Linux 5.15 and 6.8 in QEMU. Known gaps:
+eTrace is pre-1.0. CI covers unit tests on amd64 and arm64, ClickHouse driver tests, the full e2e stack, and the BPF kernel suite on Linux 5.15 and 6.8 in QEMU. Known gaps:
 
 - **Wakeup chains are a correlation, not a proof of causality.** A hop is recorded when the waker's previous wait overlapped the wakee's wait. Lock handoff, condition variables, epoll, and timers can produce plausible chains that are not the true cause.
 - **User-stack coverage depends on `.eh_frame`.** JIT code, Go binaries, signal frames, alt stacks, and DWARF expressions outside the supported rules fall back to frame pointers or lose frames.
 - **GPU launch names are best effort.** Above `gpu.max_launch_rate` the launch probes are detached and waits carry no kernel name. Graph launches are named `CUDA graph`, not the graph's kernels.
 - **Hosted CI runs TCG, not KVM.** The QEMU job uses two vCPUs. Self-hosted runners with `/dev/kvm` are faster and less timing-sensitive.
 - **arm64 kernel runtime tests are not in CI.** arm64 builds and unit tests are covered; the QEMU kernel matrix is amd64 only.
-- **The full e2e stack is not in CI.** `make e2e` needs a privileged Docker host with BPF access.
 - **No published overhead benchmarks yet.** Measure on your workload before fleet-wide deployment.
 - **OTLP profiles are not exported.** pprof, collapsed, and Pyroscope are supported.
 
@@ -396,8 +406,8 @@ Keep changes focused, add a regression test for a fixed bug, and describe what y
 ## Security
 
 - The agent needs `CAP_BPF`, `CAP_PERFMON`, and `CAP_SYS_RESOURCE` (or root). Treat it as privileged infrastructure.
-- The collector authenticates agents with a static bearer token from `ETRACE_INGEST_TOKEN`. If the token list is empty, authentication is disabled. TLS is available but off in the reference config; enable it or use a trusted network.
-- The query service has no built-in authentication. Expose it behind an authenticated proxy or keep it on a trusted network.
+- The collector authenticates agents with static bearer tokens. Startup fails when no token is configured unless `allow_unauthenticated` or client-certificate TLS is explicitly enabled. Use TLS between agent and collector; the reference config allows plaintext with `tls.allow_insecure` only for trusted networks.
+- The query service requires a bearer token or HTTP Basic credentials on `/api/*`; TLS client certificates can replace both. Static UI assets are public. Configure `auth` in `configs/query.yaml` and terminate TLS in front of the service.
 - To report a vulnerability, use GitHub's private security advisories for this repository instead of a public issue.
 
 ## Acknowledgements

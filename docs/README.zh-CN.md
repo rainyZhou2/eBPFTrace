@@ -67,9 +67,9 @@ make builder   # 只需执行一次
 make e2e
 ```
 
-`make e2e` 用 Docker Compose（`test/e2e/stack`）启动 agent、collector、query、ClickHouse、Jaeger 和一个已接入的 Python 服务。它会验证两条 `load_cache` trace，分别覆盖收到信号后释放锁的真实交接，以及信号虽唤醒持锁线程、锁仍按独立截止时间释放的场景。若要保留环境，先执行 `make build scenarios e2e-scenario`，再到 `test/e2e/stack` 下执行 `docker compose up -d --build`。Web UI 在 http://127.0.0.1:18080，Jaeger 在 http://127.0.0.1:16686。
+`make e2e` 用 Docker Compose（`test/e2e/stack`）启动 agent、collector、query、ClickHouse、Jaeger 和一个已接入的 Python 服务。它会验证两条 `load_cache` trace，分别覆盖收到信号后释放锁的真实交接，以及信号虽唤醒持锁线程、锁仍按独立截止时间释放的场景。若要保留环境，先执行 `make build scenarios e2e-scenario`，再到 `test/e2e/stack` 下执行 `docker compose up -d --build`。Web UI 在 http://127.0.0.1:18080（HTTP Basic `e2e`/`e2e`），Jaeger 在 http://127.0.0.1:16686。
 
-e2e 需要一台能访问 BPF 的特权 Docker 主机，不在托管 CI 中运行；参见[项目状态与已知限制](#项目状态与已知限制)。
+e2e 需要一台能访问 BPF 的特权 Docker 主机；CI 会在 `ubuntu-24.04` 上运行同一套栈。若 runner 禁止特权容器或 BPF，应改到 self-hosted 主机运行。
 
 ## 环境要求
 
@@ -83,7 +83,7 @@ e2e 需要一台能访问 BPF 的特权 Docker 主机，不在托管 CI 中运�
 
 ### 构建机
 
-- Docker。编译器、BPF 用的 clang 以及全部固定版本依赖都在构建镜像里。
+- Docker 与 Buildx（Docker Desktop，或安装 `docker-buildx-plugin`）。编译器、BPF 用的 clang 以及全部固定版本依赖都在构建镜像里。
 - gRPC 1.80 或更高。构建镜像固定 1.81；Debian 13 的 1.51 等发行版包对 `src/platform` 里的 TLS credentials 代码来说太旧。
 
 ## 构建
@@ -100,7 +100,7 @@ make fmt       # 格式化 src 与 test（fmt-check 只检查）
 ```
 
 - BPF 程序按构建机的架构编译并嵌入二进制。amd64 二进制要在 amd64 构建镜像中构建；arm64 同理。
-- 构建镜像默认从 `debian:trixie`、`deb.debian.org` 和 `github.com` 拉取。`BASE_IMAGE`、`APT_MIRROR`、`GITHUB_PROXY`、`SOURCEWARE_MIRROR` 可以把这些步骤转到镜像源，例如 `make builder BUILDER_BUILD_ARGS='--build-arg GITHUB_PROXY=https://gh-proxy.com'`；`build/vcpkg-fetch.sh` 也会把后两个用于 vcpkg 下载。
+- 构建镜像默认从 `debian:trixie`、`deb.debian.org` 和 `github.com` 拉取。`BASE_IMAGE`、`APT_MIRROR`、`GITHUB_PROXY`、`SOURCEWARE_MIRROR`、`GNU_MIRROR` 可以把这些步骤转到镜像源，例如 `make builder BUILDER_BUILD_ARGS='--build-arg GITHUB_PROXY=https://gh-proxy.com'`；`build/vcpkg-fetch.sh` 也会把后两个用于 vcpkg 下载。
 - 支持 sanitizer 构建：`make build CMAKE_FLAGS=-DETRACE_SANITIZE=address,undefined`（或 `thread`）。
 - `make bpf-ide-headers` 和 `make ide` 会把 Linux/libbpf 头文件与编译数据库复制出来，供 clangd 使用。
 
@@ -203,20 +203,28 @@ flowchart LR
 
 ### Kubernetes
 
-`deploy/k8s` 包含 namespace 与 secret、agent DaemonSet，以及 collector 和 query 的 Deployment、Service、PDB 和 HPA。清单假定已有 ClickHouse（`clickhouse.etrace.svc:9000`）和 Jaeger query（`http://jaeger-query.observability.svc:16686`）；按实际集群修改 `env`。
+`deploy/k8s` 包含 namespace、agent DaemonSet，以及 collector 和 query 的 Deployment、Service、PDB 和 HPA。清单假定已有 ClickHouse（`clickhouse.etrace.svc:9000`）和 Jaeger query（`http://jaeger-query.observability.svc:16686`）；按实际集群修改 `env`。
 
 ```sh
-make image                                   # 多架构运行时镜像 etrace:<version>
-# 编辑 deploy/k8s/namespace.yaml，替换 etrace-secrets 里的 change-me 值
+make image                                   # 运行时镜像 etrace:<version> 和 etrace:latest
 kubectl apply -f deploy/k8s/namespace.yaml
+kubectl -n etrace create secret generic etrace-secrets \
+  --from-literal=ingest-token="$(openssl rand -hex 32)" \
+  --from-literal=query-token="$(openssl rand -hex 32)" \
+  --from-literal=query-user=etrace \
+  --from-literal=query-password="$(openssl rand -hex 16)" \
+  --from-literal=clickhouse-user=default \
+  --from-literal=clickhouse-password='<clickhouse-password>'
 kubectl apply -f deploy/k8s/
 ```
+
+collector 在未配置 token 时拒绝启动；agent 在明文通道发送 token 时，必须显式设置 `allow_insecure: true`。query 的 `/api/*` 需要 bearer token 或 HTTP Basic；配置了 `query-user` 和 `query-password` 时，浏览器 UI 会弹出 Basic 登录框。
 
 collector 启动时会创建 ClickHouse 表（`auto_migrate: true`）；query 不会。把 `CLICKHOUSE_CLUSTER` 设为集群名可创建 replicated 与 distributed 表。
 
 ### 配置
 
-每个服务默认读取 `/etc/etrace/<command>.yaml`，可用 `-config path` 覆盖。`${VAR}` 会从环境变量展开，密钥不必写进配置文件。参考配置在 `configs/`：
+每个服务默认读取 `/etc/etrace/<command>.yaml`，可用 `-config path` 覆盖。`${VAR}` 会在 YAML 解析后从环境变量展开；必需值用 `${VAR:?message}`。参考配置在 `configs/`：
 
 | 文件 | 用途 |
 |---|---|
@@ -282,6 +290,7 @@ query 服务在 HTTP 端口的 `/` 提供浏览器 UI：过滤器（时间范围
 - `flamegraph`：每一跳以 `--` 帧叠在下面，先是 `<- comm`，然后是它的唤醒栈，再是 `waiting: comm` 和它的等待栈。pprof profile 的 sample type 为 `off_cpu/nanoseconds` 与 `waits/count`，可用于 `go tool pprof`、speedscope 或 Pyroscope；`etrace doctor -pprof file` 也会写一份。
 - 单次等待的直接唤醒标为 `wake_evidence: observed`，按重叠关联的上游跳标为 `wake_evidence: inferred`。`wait_evidence: inferred` 表示唤醒者的上一段等待与本次等待存在推断关联。causes 响应沿用 `root_cause` 作为位置字段，并通过 `cause_evidence` 标明阻塞点、观测到的唤醒或推断的上游等待。
 - 没有 trace 后端时，trace 事件会以未归属形式返回，`partial` 字段说明原因。
+- API 请求按客户端限流（`rate_limit`）。ClickHouse 查询会带上 `storage.options` 里的 `max_execution_time`、`max_memory_usage` 和 `max_rows_to_group_by`；超过预算的查询直接失败，而不是拖垮副本。
 
 ### 导出到 Pyroscope
 
@@ -312,6 +321,8 @@ test/kernel/qemu/run.sh --kernel-image ubuntu:22.04 --expect 5.15
 `.github/workflows/ci.yml` 会执行：
 
 - amd64 与 arm64 的单元测试；
+- 针对 ClickHouse 24.8 的存储驱动测试；
+- 在 `ubuntu-24.04` 上使用特权 Docker 与 BPF 的完整 e2e 链路；
 - Ubuntu 5.15 与 6.8 内核上的 QEMU kernel 测试。默认 2 个 vCPU；runner 暴露 `/dev/kvm` 时自动使用 KVM，托管 runner 回退到 TCG。
 
 发布 workflow（`.github/workflows/release.yml`）会把 `v*` tag 变成带校验和的 `etrace-linux-amd64` / `etrace-linux-arm64` 产物和 GitHub release。
@@ -368,14 +379,13 @@ build                构建与运行 Dockerfile、vcpkg overlay
 
 ## 项目状态与已知限制
 
-eTrace 仍处于 1.0 之前。当前 CI 覆盖 amd64/arm64 单元测试，以及 Linux 5.15/6.8 的 QEMU BPF 内核测试。已知缺口：
+eTrace 仍处于 1.0 之前。当前 CI 覆盖 amd64/arm64 单元测试、ClickHouse 存储驱动测试、完整 e2e 链路，以及 Linux 5.15/6.8 的 QEMU BPF 内核测试。已知缺口：
 
 - **唤醒链是相关性，不是因果证明。** 当唤醒者上一段等待与被唤醒者的等待重叠时才会记录一跳。锁交接、条件变量、epoll 和定时器都可能产生看似合理、但并非真实原因的链。
 - **用户栈覆盖依赖 `.eh_frame`。** JIT 代码、Go 二进制、信号帧、alt stack，以及受支持规则之外的 DWARF 表达式会回退到帧指针，或丢失部分帧。
 - **GPU kernel 名是尽力而为。** 超过 `gpu.max_launch_rate` 后 launch 探针会被摘除，等待不再带 kernel 名。graph 启动显示为 `CUDA graph`，而不是 graph 内的 kernel。
 - **托管 CI 使用 TCG，不是 KVM。** QEMU 任务使用 2 个 vCPU。带有 `/dev/kvm` 的 self-hosted runner 会更快，也更不受时序影响。
 - **arm64 内核运行时测试尚未进入 CI。** arm64 的构建和单元测试已覆盖，但 QEMU kernel matrix 目前只有 amd64。
-- **完整 e2e 链路不在 CI 中。** `make e2e` 需要能访问 BPF 的特权 Docker 主机。
 - **还没有公开的开销基准。** 全机部署前请在自己的负载上测量。
 - **不导出 OTLP profiles。** 目前支持 pprof、collapsed 和 Pyroscope。
 
@@ -396,8 +406,8 @@ make test-kernel   # 没有特权 Docker 时可用 test/kernel/qemu/run.sh
 ## 安全
 
 - agent 需要 `CAP_BPF`、`CAP_PERFMON`、`CAP_SYS_RESOURCE`（或 root），应当按特权基础设施对待。
-- collector 用 `ETRACE_INGEST_TOKEN` 里的静态 bearer token 鉴权 agent。token 列表为空时鉴权是关闭的。参考配置默认不启用 TLS；请启用 TLS，或只在可信网络中使用。
-- query 服务没有内建鉴权。请放在带鉴权的代理后面，或只暴露在可信网络。
+- collector 用静态 bearer token 鉴权 agent。未配置 token 时启动失败，除非显式启用 `allow_unauthenticated` 或客户端证书 TLS。agent 与 collector 之间应启用 TLS；参考配置的 `tls.allow_insecure` 只用于可信网络。
+- query 的 `/api/*` 需要 bearer token 或 HTTP Basic，也可以用 TLS 客户端证书替代；静态 UI 资源保持公开。请在 `configs/query.yaml` 的 `auth` 中配置，并在服务前终止 TLS。
 - 报告漏洞请使用本仓库的 GitHub 私有 security advisory，不要开公开 issue。
 
 ## 致谢

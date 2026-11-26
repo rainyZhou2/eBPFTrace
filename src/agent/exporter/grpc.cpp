@@ -67,6 +67,13 @@ std::vector<etrace::v1::PushRequest> split(etrace::v1::Batch& full, size_t limit
 
 }  // namespace
 
+void Options::validate() const {
+	grpcx::ClientConfig::validate();
+	if (timeout <= Duration(0)) {
+		throw Error("timeout must be positive");
+	}
+}
+
 void decode_fields(config::Fields& f, Options& o) {
 	grpcx::decode_fields(f, static_cast<grpcx::ClientConfig&>(o));
 	f("timeout", o.timeout);
@@ -116,8 +123,6 @@ void Exporter::push(std::stop_token st, const etrace::v1::PushRequest& req) {
 	                       status.error_message());
 	switch (status.error_code()) {
 		case grpc::StatusCode::INVALID_ARGUMENT:
-		case grpc::StatusCode::UNAUTHENTICATED:
-		case grpc::StatusCode::PERMISSION_DENIED:
 		case grpc::StatusCode::UNIMPLEMENTED:
 			throw PermanentError(msg);
 		default:

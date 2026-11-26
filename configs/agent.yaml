@@ -62,7 +62,8 @@ exporter:
   driver: grpc
   options:
     target: dns:///etrace-collector-headless.etrace.svc.cluster.local:4317
-    token: ${ETRACE_INGEST_TOKEN}
+    token: "${ETRACE_INGEST_TOKEN:?ingest token is required}"
     timeout: 10s
     tls:
       enabled: false
+      allow_insecure: true

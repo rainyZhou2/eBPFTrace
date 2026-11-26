@@ -1,7 +1,7 @@
 name: etrace-e2e
 
 x-etrace: &etrace
-  image: docker.1ms.run/library/debian:trixie
+  image: ${ETRACE_RUNTIME_IMAGE:-docker.1ms.run/library/debian:trixie}
   volumes:
     - ../../../bin/etrace-linux-${HOST_ARCH:-arm64}:/usr/local/bin/etrace:ro
     - .:/etc/etrace:ro
@@ -9,7 +9,7 @@ x-etrace: &etrace
 
 services:
   clickhouse:
-    image: docker.1ms.run/clickhouse/clickhouse-server:24.8
+    image: ${CLICKHOUSE_IMAGE:-docker.1ms.run/clickhouse/clickhouse-server:24.8}
     environment:
       CLICKHOUSE_USER: etrace
       CLICKHOUSE_PASSWORD: etrace
@@ -19,7 +19,7 @@ services:
       retries: 30
 
   jaeger:
-    image: docker.1ms.run/jaegertracing/all-in-one:1.62.0
+    image: ${JAEGER_IMAGE:-docker.1ms.run/jaegertracing/all-in-one:1.62.0}
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports: ["16686:16686"]
@@ -33,6 +33,8 @@ services:
   query:
     <<: *etrace
     command: ["etrace", "query", "-config", "/etc/etrace/query.yaml"]
+    environment:
+      ETRACE_QUERY_TOKEN: e2e-query-token
     ports: ["18080:8080"]
     depends_on: [collector, jaeger]
 

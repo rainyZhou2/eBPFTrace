@@ -1,25 +1,22 @@
 #include "collector/grpc.h"
 
+#include <string_view>
+#include <utility>
+
 #include "wire/wire.h"
 
 namespace etrace::collector {
 
-GrpcHandler::GrpcHandler(Ingester& ing, const std::vector<std::string>& tokens, log::Logger log)
-    : ingester_(ing), log_(std::move(log)) {
-	for (const auto& t : tokens) {
-		if (!t.empty()) {
-			allowed_.insert("Bearer " + t);
-		}
-	}
-}
+GrpcHandler::GrpcHandler(Ingester& ing, Auth auth, wire::Limits limits, log::Logger log)
+    : ingester_(ing), auth_(std::move(auth)), limits_(limits), log_(std::move(log)) {}
 
 bool GrpcHandler::authorized(const grpc::ServerContext& ctx) const {
-	if (allowed_.empty()) {
+	if (auth_.anonymous()) {
 		return true;
 	}
 	auto range = ctx.client_metadata().equal_range("authorization");
 	for (auto it = range.first; it != range.second; ++it) {
-		if (allowed_.contains(std::string(it->second.data(), it->second.size()))) {
+		if (auth_.authorize(std::string_view(it->second.data(), it->second.size()))) {
 			return true;
 		}
 	}
@@ -32,7 +29,7 @@ grpc::Status GrpcHandler::Push(grpc::ServerContext* ctx, const etrace::v1::PushR
 		return grpc::Status(grpc::StatusCode::UNAUTHENTICATED, "invalid token");
 	}
 	try {
-		auto b = wire::from_proto(req->batch());
+		auto b = wire::from_proto(req->batch(), limits_);
 		if (ctx->IsCancelled()) {
 			return grpc::Status(grpc::StatusCode::CANCELLED, "context canceled");
 		}

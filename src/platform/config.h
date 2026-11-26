@@ -28,8 +28,8 @@ concept Decodable = requires(Fields& f, T& t) { decode_fields(f, t); };
 template <class T>
 concept Validatable = requires(T& t) { t.validate(); };
 
-// expand_env replaces $VAR and ${VAR} with the environment value, or with
-// nothing when unset, before the YAML is parsed.
+// expand_env replaces $VAR and ${VAR} with the environment value. ${VAR:?}
+// fails when the variable is unset or empty; $$ is a literal dollar.
 std::string expand_env(std::string_view raw);
 
 template <class T>

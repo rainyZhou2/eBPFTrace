@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <sstream>
 
+#include "platform/auth.h"
 #include "platform/config.h"
 #include "platform/flags.h"
 #include "platform/lru.h"
+#include "platform/ratelimit.h"
 #include "platform/spool.h"
 #include "platform/time.h"
 #include "platform/url.h"
@@ -66,6 +69,54 @@ TEST(Spool, RemovesPartialWrites) {
 	spool::Spool s(dir.path(), 0);
 	EXPECT_EQ(s.size(), 0u);
 	EXPECT_FALSE(std::filesystem::exists(dir / "x.rec.tmp"));
+}
+
+TEST(Config, ExpandsEnvironmentAfterParsing) {
+	setenv("ETRACE_TEST_VALUE", "a: b#c", 1);
+	auto node = config::parse_text(
+	        "plain: ${ETRACE_TEST_VALUE}\nshort: $ETRACE_TEST_VALUE\nescaped: $${ETRACE_TEST_VALUE}\n");
+	EXPECT_EQ(node["plain"].as<std::string>(), "a: b#c");
+	EXPECT_EQ(node["short"].as<std::string>(), "a: b#c");
+	EXPECT_EQ(node["escaped"].as<std::string>(), "${ETRACE_TEST_VALUE}");
+
+	unsetenv("ETRACE_TEST_MISSING");
+	auto missing = config::parse_text("v: ${ETRACE_TEST_MISSING}\n")["v"];
+	EXPECT_TRUE(missing.IsNull() || missing.as<std::string>().empty());
+	EXPECT_THROW(config::parse_text("v: ${ETRACE_TEST_MISSING:?missing value}\n"), Error);
+	unsetenv("ETRACE_TEST_VALUE");
+}
+
+TEST(Auth, TokenAndBasicHeaders) {
+	EXPECT_TRUE(auth::constant_time_equal("abc", "abc"));
+	EXPECT_FALSE(auth::constant_time_equal("abc", "abd"));
+	EXPECT_FALSE(auth::constant_time_equal("abc", "ab"));
+
+	auto token = auth::bearer_token("Bearer secret");
+	ASSERT_TRUE(token);
+	EXPECT_EQ(*token, "secret");
+	EXPECT_FALSE(auth::bearer_token("Basic c2VjcmV0"));
+
+	auto basic = auth::basic_credentials("Basic b3BzOnB3");
+	ASSERT_TRUE(basic);
+	EXPECT_EQ(basic->user, "ops");
+	EXPECT_EQ(basic->password, "pw");
+	EXPECT_FALSE(auth::basic_credentials("Basic !!!"));
+
+	auth::TokenSet tokens({"one", "two"});
+	EXPECT_TRUE(tokens.contains("two"));
+	EXPECT_FALSE(tokens.contains("three"));
+}
+
+TEST(RateLimit, TokenBucket) {
+	std::chrono::steady_clock::time_point now{};
+	ratelimit::Limiter limiter(ratelimit::Policy{true, 1.0, 1.0, 1min}, [&] { return now; });
+	EXPECT_TRUE(limiter.allow("client"));
+	EXPECT_FALSE(limiter.allow("client"));
+	now += 1s;
+	EXPECT_TRUE(limiter.allow("client"));
+	EXPECT_TRUE(limiter.allow("other"));
+	now += 2min;
+	EXPECT_TRUE(limiter.allow("client"));
 }
 
 TEST(Duration, ParseAndFormatLikeGo) {

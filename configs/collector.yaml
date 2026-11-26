@@ -9,7 +9,7 @@ grpc:
   max_connection_age: 5m
   graceful_timeout: 15s
 tokens:
-  - ${ETRACE_INGEST_TOKEN}
+  - "${ETRACE_INGEST_TOKEN:?ingest token is required}"
 dedup:
   size: 100000
   ttl: 1h

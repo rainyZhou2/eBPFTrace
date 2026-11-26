@@ -38,6 +38,8 @@ struct Limits {
 	int max_events_per_batch = 100000;
 	int max_frames_per_stack = 256;
 	int max_chain_hops = 8;
+
+	void validate() const;
 };
 
 void decode_fields(config::Fields& f, Limits& l);

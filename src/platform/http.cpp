@@ -42,10 +42,10 @@ std::pair<std::string, int> split_listen(const std::string& listen) {
 
 Server::Server(std::string name, ServerConfig cfg, log::Logger log)
     : name_(std::move(name)), cfg_(std::move(cfg)), log_(std::move(log)) {
+	tls::validate_server(cfg_.tls);
 	if (cfg_.tls.enabled) {
 		tls::server_material(cfg_.tls);
-		const char* ca =
-		        cfg_.tls.require_client_cert && !cfg_.tls.ca_file.empty() ? cfg_.tls.ca_file.c_str() : nullptr;
+		const char* ca = cfg_.tls.require_client_cert ? cfg_.tls.ca_file.c_str() : nullptr;
 		auto ssl =
 		        std::make_unique<httplib::SSLServer>(cfg_.tls.cert_file.c_str(), cfg_.tls.key_file.c_str(), ca);
 		if (!ssl->is_valid()) {

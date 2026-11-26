@@ -13,6 +13,12 @@ void decode_fields(config::Fields& f, Limits& l) {
 	        "max_frames_per_stack", l.max_frames_per_stack)("max_chain_hops", l.max_chain_hops);
 }
 
+void Limits::validate() const {
+	if (max_samples_per_batch < 0 || max_events_per_batch < 0 || max_frames_per_stack < 0 || max_chain_hops < 0) {
+		throw Error("collector limits must not be negative");
+	}
+}
+
 Service::Service(storage::Writer& w, DedupConfig dedup, Limits limits, telemetry::Registry& reg, log::Logger log)
     : writer_(w),
       log_(std::move(log)),

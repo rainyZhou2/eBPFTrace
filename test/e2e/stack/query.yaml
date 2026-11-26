@@ -1,6 +1,12 @@
 log: {level: info, format: text}
 admin: {listen: ":9433"}
 http: {listen: ":8080"}
+auth:
+  realm: e2e
+  tokens: ["${ETRACE_QUERY_TOKEN:?query token is required}"]
+  basic_user: e2e
+  basic_password: e2e
+rate_limit: {enabled: false}
 storage:
   driver: clickhouse
   options:

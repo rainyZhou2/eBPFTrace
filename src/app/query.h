@@ -5,6 +5,8 @@
 #include "app/common.h"
 #include "platform/config.h"
 #include "platform/http.h"
+#include "platform/ratelimit.h"
+#include "query/auth.h"
 
 namespace etrace::app::query {
 
@@ -15,6 +17,9 @@ struct Config {
 	Duration trace_lookback = 24h;
 	int max_chain_depth = 4;
 	int max_events = 5000;
+	bool trust_forwarded_for = false;
+	etrace::query::AuthConfig auth;
+	ratelimit::Policy rate_limit;
 	config::Plugin storage;
 	config::Plugin trace_backend;
 

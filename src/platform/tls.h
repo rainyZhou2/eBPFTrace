@@ -14,9 +14,15 @@ struct Config {
 	std::string server_name;
 	bool require_client_cert = false;
 	bool insecure_skip_verify = false;
+	// allow_insecure permits credentials over a plaintext channel. It must
+	// be set explicitly for deployments that terminate TLS elsewhere.
+	bool allow_insecure = false;
 };
 
 void decode_fields(config::Fields& f, Config& c);
+
+void validate_server(const Config& c);
+void validate_client(const Config& c, bool has_credentials);
 
 // PEM material loaded from the configured files. Loading throws Error with
 // the failing file so misconfiguration stops startup.

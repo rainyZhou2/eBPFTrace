@@ -24,7 +24,10 @@ data:
       driver: grpc
       options:
         target: dns:///etrace-collector-headless.etrace.svc.cluster.local:4317
-        token: ${ETRACE_INGEST_TOKEN}
+        token: "${ETRACE_INGEST_TOKEN:?ingest token is required}"
+        tls:
+          enabled: false
+          allow_insecure: true
 ---
 apiVersion: apps/v1
 kind: DaemonSet

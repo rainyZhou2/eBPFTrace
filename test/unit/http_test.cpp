@@ -10,8 +10,11 @@
 
 #include "agent/exporter/grpc.h"
 #include "agent/exporter/pyroscope.h"
+#include "collector/auth.h"
 #include "collector/grpc.h"
 #include "platform/grpc.h"
+#include "platform/ratelimit.h"
+#include "query/auth.h"
 #include "query/http.h"
 #include "query/service.h"
 #include "query/ui.h"
@@ -19,6 +22,7 @@
 #include "symbol/debuginfod.h"
 #include "testutil.h"
 #include "tracing/jaeger.h"
+#include "wire/wire.h"
 
 namespace etrace {
 namespace {
@@ -99,7 +103,11 @@ TEST(QueryHTTP, ValidatesParametersAndServesFormats) {
 	        model::OffCPUSample{model::Task{1, 1, "api", "", {}}, testing::frames({"futex_wait"}), {}, 10, 1, {}});
 	store.write_batch(b);
 	query::Service svc(store);
-	query::Handler h(svc, nullptr, query::HandlerConfig{7 * 24h, 15min, 24h, 4, 100}, log::Logger::discard());
+	query::Handler h(svc, nullptr,
+	                 query::HandlerOptions{query::HandlerConfig{7 * 24h, 15min, 24h, 4, 100},
+	                                       query::AuthConfig{.allow_unauthenticated = true},
+	                                       ratelimit::Policy{.enabled = false}, false},
+	                 log::Logger::discard());
 	TestServer r([&](httplib::Server& s) { h.routes(s); });
 	httplib::Client c(r.url());
 
@@ -131,6 +139,93 @@ TEST(QueryHTTP, ValidatesParametersAndServesFormats) {
 	EXPECT_EQ(j["partial"], "no trace backend configured");
 	res = c.Get("/api/v1/traces/abc/offcpu");
 	EXPECT_EQ(res->status, 400);
+}
+
+TEST(QueryHTTP, RequiresCredentialsAndKeepsUIPublic) {
+	storage::memory::Store store(storage::memory::Options{Duration(0)});
+	query::Service svc(store);
+	query::AuthConfig auth;
+	auth.tokens = {"query-secret"};
+	auth.basic_user = "ops";
+	auth.basic_password = "pw";
+	query::Handler h(svc, nullptr,
+	                 query::HandlerOptions{query::HandlerConfig{7 * 24h, 15min, 24h, 4, 100}, auth,
+	                                       ratelimit::Policy{.enabled = false}, false},
+	                 log::Logger::discard());
+	TestServer r([&](httplib::Server& s) {
+		h.routes(s);
+		query::ui::routes(s);
+	});
+	httplib::Client c(r.url());
+
+	auto res = c.Get("/api/v1/offcpu/flamegraph");
+	ASSERT_TRUE(res);
+	EXPECT_EQ(res->status, 401);
+	EXPECT_NE(res->get_header_value("WWW-Authenticate").find("Basic"), std::string::npos);
+
+	res = c.Get("/");
+	ASSERT_TRUE(res);
+	EXPECT_EQ(res->status, 200);
+
+	res = c.Get("/api/v1/offcpu/flamegraph", httplib::Headers{{"Authorization", "Bearer query-secret"}});
+	ASSERT_TRUE(res);
+	EXPECT_EQ(res->status, 200);
+
+	res = c.Get("/api/v1/offcpu/flamegraph", httplib::Headers{{"Authorization", "Bearer wrong"}});
+	ASSERT_TRUE(res);
+	EXPECT_EQ(res->status, 401);
+
+	c.set_basic_auth("ops", "pw");
+	res = c.Get("/api/v1/offcpu/flamegraph");
+	ASSERT_TRUE(res);
+	EXPECT_EQ(res->status, 200);
+}
+
+TEST(QueryHTTP, RateLimitsAPI) {
+	storage::memory::Store store(storage::memory::Options{Duration(0)});
+	query::Service svc(store);
+	query::Handler h(svc, nullptr,
+	                 query::HandlerOptions{query::HandlerConfig{7 * 24h, 15min, 24h, 4, 100},
+	                                       query::AuthConfig{.allow_unauthenticated = true},
+	                                       ratelimit::Policy{.enabled = true, .rate = 0.01, .burst = 1}, false},
+	                 log::Logger::discard());
+	TestServer r([&](httplib::Server& s) { h.routes(s); });
+	httplib::Client c(r.url());
+
+	auto res = c.Get("/api/v1/offcpu/flamegraph");
+	ASSERT_TRUE(res);
+	EXPECT_EQ(res->status, 200);
+	res = c.Get("/api/v1/offcpu/flamegraph");
+	ASSERT_TRUE(res);
+	EXPECT_EQ(res->status, 429);
+	EXPECT_EQ(res->get_header_value("Retry-After"), "1");
+}
+
+TEST(CollectorAuth, FailsClosed) {
+	EXPECT_THROW(collector::Auth({}, false, false), Error);
+	EXPECT_THROW(collector::Auth({""}, false, false), Error);
+	EXPECT_NO_THROW(collector::Auth({"token"}, false, false));
+	EXPECT_NO_THROW(collector::Auth({}, true, false));
+	EXPECT_NO_THROW(collector::Auth({}, false, true));
+
+	collector::Auth auth({"token"}, false, false);
+	EXPECT_TRUE(auth.authorize("Bearer token"));
+	EXPECT_FALSE(auth.authorize("Bearer wrong"));
+	EXPECT_FALSE(auth.authorize("Basic dG9rZW46"));
+}
+
+TEST(Wire, RejectsOversizedStacksDuringDecode) {
+	etrace::v1::Batch p;
+	p.set_id("b");
+	p.mutable_resource()->set_node("n");
+	auto* sample = p.add_offcpu();
+	for (int i = 0; i < 32; i++) {
+		sample->mutable_stack()->add_frames()->set_function("f");
+	}
+	wire::Limits limits;
+	limits.max_frames = 8;
+	EXPECT_THROW(wire::from_proto(p, limits), wire::InvalidBatch);
+	EXPECT_NO_THROW(wire::from_proto(p));
 }
 
 model::Batch pyro_batch() {
@@ -374,13 +469,15 @@ TEST(Debuginfod, ConfigValidation) {
 }
 
 // The agent's gRPC exporter delivers to a collector that stores into
-// memory; a retried push is idempotent and a wrong token is permanent.
+// memory; a retried push is idempotent and an authentication failure is
+// retried instead of dropped.
 TEST(Ingest, AgentToCollectorToQuery) {
 	storage::memory::Store store(storage::memory::Options{Duration(0)});
 	telemetry::Registry reg(false);
 	collector::Service svc(store, collector::DedupConfig{100, 1min}, collector::Limits{0, 0, 0, 0}, reg,
 	                       log::Logger::discard());
-	collector::GrpcHandler handler(svc, {"secret"}, log::Logger::discard());
+	collector::GrpcHandler handler(svc, collector::Auth({"secret"}, false, false), wire::Limits{},
+	                               log::Logger::discard());
 	grpcx::ServerConfig sc;
 	sc.listen = "127.0.0.1:0";
 	sc.graceful_timeout = 1s;
@@ -393,6 +490,7 @@ TEST(Ingest, AgentToCollectorToQuery) {
 	agent::grpcexp::Options opts;
 	opts.target = "127.0.0.1:" + std::to_string(srv.bound_port());
 	opts.token = "secret";
+	opts.tls.allow_insecure = true;
 	agent::grpcexp::Exporter exp(opts);
 	auto now = etrace::now();
 	model::Batch b;
@@ -418,7 +516,13 @@ TEST(Ingest, AgentToCollectorToQuery) {
 
 	auto bad = opts;
 	bad.token = "wrong";
-	EXPECT_THROW(agent::grpcexp::Exporter(bad).export_batch({}, b), agent::PermanentError);
+	try {
+		agent::grpcexp::Exporter(bad).export_batch({}, b);
+		FAIL() << "a wrong token must fail";
+	} catch (const agent::PermanentError&) {
+		FAIL() << "an authentication failure must be retried, not dropped";
+	} catch (const Error&) {
+	}
 	stop.request_stop();
 	t.join();
 }
@@ -431,7 +535,7 @@ TEST(Ingest, SplitsOversizedBatch) {
 	telemetry::Registry reg(false);
 	collector::Service svc(store, collector::DedupConfig{100, 1min}, collector::Limits{0, 0, 0, 0}, reg,
 	                       log::Logger::discard());
-	collector::GrpcHandler handler(svc, {}, log::Logger::discard());
+	collector::GrpcHandler handler(svc, collector::Auth({}, true, false), wire::Limits{}, log::Logger::discard());
 	grpcx::ServerConfig sc;
 	sc.listen = "127.0.0.1:0";
 	sc.graceful_timeout = 1s;
@@ -506,7 +610,7 @@ TEST(Ingest, MutualTLS) {
 	telemetry::Registry reg(false);
 	collector::Service svc(store, collector::DedupConfig{100, 1min}, collector::Limits{0, 0, 0, 0}, reg,
 	                       log::Logger::discard());
-	collector::GrpcHandler handler(svc, {}, log::Logger::discard());
+	collector::GrpcHandler handler(svc, collector::Auth({}, false, true), wire::Limits{}, log::Logger::discard());
 	grpcx::ServerConfig sc;
 	sc.listen = "127.0.0.1:0";
 	sc.graceful_timeout = 1s;

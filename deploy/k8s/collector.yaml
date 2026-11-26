@@ -10,7 +10,7 @@ data:
     grpc:
       listen: ":4317"
       max_connection_age: 5m
-    tokens: ["${ETRACE_INGEST_TOKEN}"]
+    tokens: ["${ETRACE_INGEST_TOKEN:?ingest token is required}"]
     storage:
       driver: clickhouse
       options:
@@ -72,9 +72,11 @@ spec:
           readinessProbe:
             httpGet: {path: /readyz, port: admin}
             periodSeconds: 5
+            timeoutSeconds: 3
           livenessProbe:
             httpGet: {path: /healthz, port: admin}
             periodSeconds: 10
+            timeoutSeconds: 3
           resources:
             requests: {cpu: 500m, memory: 512Mi}
             limits: {memory: 2Gi}

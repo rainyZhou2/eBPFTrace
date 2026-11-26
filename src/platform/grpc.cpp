@@ -38,10 +38,34 @@ void decode_fields(config::Fields& f, ClientConfig& c) {
 	        "keepalive_time", c.keepalive_time);
 }
 
-Server::Server(ServerConfig cfg, log::Logger log) : cfg_(std::move(cfg)), log_(std::move(log)) {
-	if (cfg_.tls.enabled) {
-		tls::server_material(cfg_.tls);
+void ServerConfig::validate() const {
+	if (max_recv_msg_bytes <= 0) {
+		throw Error("grpc: max_recv_msg_bytes must be positive");
 	}
+	if (max_concurrent_streams == 0) {
+		throw Error("grpc: max_concurrent_streams must be positive");
+	}
+	if (max_connection_age <= Duration(0) || graceful_timeout <= Duration(0)) {
+		throw Error("grpc: connection age and graceful timeout must be positive");
+	}
+	::etrace::tls::validate_server(tls);
+}
+
+void ClientConfig::validate() const {
+	if (target.empty()) {
+		throw Error("grpc: target is required");
+	}
+	if (max_send_msg_bytes <= 0) {
+		throw Error("grpc: max_send_msg_bytes must be positive");
+	}
+	if (keepalive_time <= Duration(0)) {
+		throw Error("grpc: keepalive_time must be positive");
+	}
+	::etrace::tls::validate_client(tls, !token.empty());
+}
+
+Server::Server(ServerConfig cfg, log::Logger log) : cfg_(std::move(cfg)), log_(std::move(log)) {
+	cfg_.validate();
 }
 
 Server::~Server() = default;
@@ -115,9 +139,7 @@ void Server::run(std::stop_token st) {
 }
 
 std::shared_ptr<grpc::Channel> dial(const ClientConfig& c) {
-	if (c.target.empty()) {
-		throw Error("grpc target is required");
-	}
+	c.validate();
 	grpc::ChannelArguments args;
 	args.SetServiceConfigJSON(
 	        R"({"loadBalancingConfig":[{"round_robin":{}}],"healthCheckConfig":{"serviceName":""}})");

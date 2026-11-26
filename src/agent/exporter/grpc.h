@@ -10,6 +10,8 @@ namespace etrace::agent::grpcexp {
 
 struct Options : grpcx::ClientConfig {
 	Duration timeout = 10s;
+
+	void validate() const;
 };
 
 void decode_fields(config::Fields& f, Options& o);

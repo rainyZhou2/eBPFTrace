@@ -113,6 +113,7 @@ etrace_library(etrace_platform
   SOURCES src/platform/time.cpp src/platform/log.cpp src/platform/config.cpp src/platform/backoff.cpp
           src/platform/spool.cpp src/platform/lifecycle.cpp src/platform/flags.cpp src/platform/url.cpp
           src/platform/tls.cpp src/platform/http.cpp src/platform/telemetry.cpp src/platform/grpc.cpp
+          src/platform/auth.cpp src/platform/ratelimit.cpp
   DEPS yaml-cpp::yaml-cpp httplib::httplib nlohmann_json::nlohmann_json prometheus-cpp::core gRPC::grpc++
        OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 
@@ -126,9 +127,11 @@ etrace_library(etrace_storage_drivers SOURCES src/storage/drivers.cpp DEPS etrac
 etrace_library(etrace_tracing SOURCES src/tracing/tracing.cpp src/tracing/jaeger.cpp DEPS etrace_platform)
 etrace_library(etrace_query
   SOURCES src/query/flame.cpp src/query/pprof.cpp src/query/json.cpp src/query/service.cpp src/query/http.cpp
-          src/query/ui.cpp ${UI_INDEX} ${UI_JS} ${UI_CSS}
+          src/query/auth.cpp src/query/ui.cpp ${UI_INDEX} ${UI_JS} ${UI_CSS}
   DEPS etrace_storage etrace_tracing)
-etrace_library(etrace_collector SOURCES src/collector/service.cpp src/collector/grpc.cpp DEPS etrace_storage etrace_wire)
+etrace_library(etrace_collector
+  SOURCES src/collector/service.cpp src/collector/grpc.cpp src/collector/auth.cpp
+  DEPS etrace_storage etrace_wire)
 etrace_library(etrace_symbol
   SOURCES src/symbol/elf.cpp src/symbol/table.cpp src/symbol/resolver.cpp src/symbol/debuginfod.cpp
   DEPS etrace_platform)

@@ -268,6 +268,10 @@ TEST(Configs, ShippedConfigsParse) {
 	setenv("NODE_NAME", "node-1", 1);
 	setenv("CLICKHOUSE_ADDR", "127.0.0.1:9000", 1);
 	setenv("JAEGER_QUERY_URL", "http://127.0.0.1:16686", 1);
+	setenv("ETRACE_INGEST_TOKEN", "ingest-test", 1);
+	setenv("ETRACE_QUERY_TOKEN", "query-test", 1);
+	unsetenv("ETRACE_QUERY_USER");
+	unsetenv("ETRACE_QUERY_PASSWORD");
 	auto dir = std::string(ETRACE_SOURCE_DIR) + "/configs/";
 	auto a = config::load<app::agent::Config>(dir + "agent.yaml");
 	EXPECT_EQ(a.node, "node-1");
@@ -324,6 +328,7 @@ TEST(ClickHouse, MigrateExistingTablesAndQueryPods) {
 	for (int i = 0; i < 2; i++) {
 		ASSERT_NO_THROW(s.migrate()) << "migrate run " << i;
 	}
+	EXPECT_NO_THROW(s.ping(2s));
 	auto now = etrace::now();
 	model::PodRef pod{"u1", "api-0", "shop", "app"};
 	auto tc = *model::parse_trace_context("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7");

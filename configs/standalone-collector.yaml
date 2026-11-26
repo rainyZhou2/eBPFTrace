@@ -5,6 +5,7 @@ admin:
   listen: ":9432"
 grpc:
   listen: ":4317"
+allow_unauthenticated: true
 storage:
   driver: memory
   options:

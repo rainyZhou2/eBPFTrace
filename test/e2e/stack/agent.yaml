@@ -23,3 +23,6 @@ exporter:
   options:
     target: dns:///collector:4317
     token: e2e-token
+    tls:
+      enabled: false
+      allow_insecure: true

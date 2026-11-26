@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "app/common.h"
+#include "collector/auth.h"
 #include "collector/service.h"
 #include "platform/config.h"
 #include "platform/grpc.h"
@@ -15,12 +16,14 @@ struct Config {
 	Common common;
 	grpcx::ServerConfig grpc;
 	std::vector<std::string> tokens;
+	bool allow_unauthenticated = false;
 	etrace::collector::DedupConfig dedup;
 	etrace::collector::Limits limits;
 	config::Plugin storage;
 
 	Config() { common.admin.listen = ":9432"; }
 	void validate() const;
+	etrace::collector::AuthConfig auth_config() const;
 };
 
 void decode_fields(config::Fields& f, Config& c);

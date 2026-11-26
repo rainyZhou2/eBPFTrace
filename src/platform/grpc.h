@@ -21,6 +21,8 @@ struct ServerConfig {
 	Duration max_connection_age = 5min;
 	Duration graceful_timeout = 15s;
 	tls::Config tls;
+
+	void validate() const;
 };
 
 void decode_fields(config::Fields& f, ServerConfig& c);
@@ -31,6 +33,8 @@ struct ClientConfig {
 	tls::Config tls;
 	int max_send_msg_bytes = 16 << 20;
 	Duration keepalive_time = 30s;
+
+	void validate() const;
 };
 
 void decode_fields(config::Fields& f, ClientConfig& c);

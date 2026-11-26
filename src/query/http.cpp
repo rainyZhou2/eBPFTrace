@@ -1,8 +1,11 @@
 #include "query/http.h"
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <format>
 #include <sstream>
+#include <utility>
 
 #include "platform/hex.h"
 #include "platform/http.h"
@@ -40,6 +43,16 @@ Time parse_time(const std::string& v, Time def) {
 	throw BadRequest(std::format("invalid time \"{}\", want unix seconds or RFC 3339", v));
 }
 
+std::string trim(std::string s) {
+	while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) {
+		s.erase(s.begin());
+	}
+	while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) {
+		s.pop_back();
+	}
+	return s;
+}
+
 std::string lower(std::string s) {
 	for (auto& c : s) {
 		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -59,11 +72,55 @@ void write_error(httplib::Response& res, int status, const std::string& msg) {
 
 }  // namespace
 
-Handler::Handler(Service& svc, tracing::Backend* backend, HandlerConfig cfg, log::Logger log,
+Handler::Handler(Service& svc, tracing::Backend* backend, HandlerOptions opts, log::Logger log,
                  std::function<Time()> clock)
-    : svc_(svc), backend_(backend), cfg_(cfg), log_(std::move(log)), now_(std::move(clock)) {}
+    : svc_(svc),
+      backend_(backend),
+      cfg_(opts.limits),
+      auth_(std::move(opts.auth)),
+      limiter_(std::move(opts.rate_limit)),
+      trust_forwarded_for_(opts.trust_forwarded_for),
+      log_(std::move(log)),
+      now_(std::move(clock)) {}
+
+std::string Handler::client_key(const httplib::Request& req) const {
+	if (trust_forwarded_for_) {
+		auto forwarded = req.get_header_value("X-Forwarded-For");
+		if (auto comma = forwarded.find(','); comma != std::string::npos) {
+			forwarded.resize(comma);
+		}
+		forwarded = trim(std::move(forwarded));
+		if (!forwarded.empty()) {
+			return forwarded;
+		}
+	}
+	return req.remote_addr;
+}
+
+bool Handler::check_auth(const httplib::Request& req, httplib::Response& res) const {
+	if (auth_.authorize(req.get_header_value("Authorization"))) {
+		return true;
+	}
+	res.set_header("WWW-Authenticate", auth_.challenge());
+	write_error(res, 401, "unauthorized");
+	return false;
+}
 
 void Handler::routes(httplib::Server& srv) {
+	srv.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+		if (!req.path.starts_with("/api/")) {
+			return httplib::Server::HandlerResponse::Unhandled;
+		}
+		if (!limiter_.allow(client_key(req))) {
+			write_error(res, 429, "rate limit exceeded");
+			res.set_header("Retry-After", "1");
+			return httplib::Server::HandlerResponse::Handled;
+		}
+		if (!check_auth(req, res)) {
+			return httplib::Server::HandlerResponse::Handled;
+		}
+		return httplib::Server::HandlerResponse::Unhandled;
+	});
 	srv.Get("/api/v1/offcpu/flamegraph", [this](const auto& req, auto& res) { flamegraph(req, res); });
 	srv.Get("/api/v1/offcpu/causes", [this](const auto& req, auto& res) { causes(req, res); });
 	srv.Get("/api/v1/offcpu/events", [this](const auto& req, auto& res) { events(req, res); });

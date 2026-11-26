@@ -1,12 +1,24 @@
 #include "wire/wire.h"
 
 #include <algorithm>
+#include <format>
+#include <string_view>
 
 namespace etrace::wire {
 
 namespace pb = etrace::v1;
 
 namespace {
+
+bool exceeds(size_t value, size_t limit) {
+	return limit > 0 && value > limit;
+}
+
+void check_string(std::string_view value, const Limits& limits, std::string_view field) {
+	if (exceeds(value.size(), limits.max_string_bytes)) {
+		throw InvalidBatch(std::format("{} exceeds {} bytes", field, limits.max_string_bytes));
+	}
+}
 
 void task_to_proto(const model::Task& t, pb::Task* out) {
 	out->set_pid(t.pid);
@@ -28,8 +40,14 @@ void set_task(const model::Task& t, auto* msg) {
 	}
 }
 
-model::Task task_from_proto(const pb::Task& t) {
+model::Task task_from_proto(const pb::Task& t, const Limits& limits) {
+	check_string(t.comm(), limits, "task comm");
+	check_string(t.container_id(), limits, "container id");
 	const auto& p = t.pod();
+	check_string(p.uid(), limits, "pod uid");
+	check_string(p.name(), limits, "pod name");
+	check_string(p.namespace_(), limits, "pod namespace");
+	check_string(p.container(), limits, "pod container");
 	return model::Task{t.pid(), t.tid(), t.comm(), t.container_id(),
 	                   model::PodRef{p.uid(), p.name(), p.namespace_(), p.container()}};
 }
@@ -45,10 +63,15 @@ void stack_to_proto(const model::Stack& s, pb::Stack* out) {
 	}
 }
 
-model::Stack stack_from_proto(const pb::Stack& s) {
+model::Stack stack_from_proto(const pb::Stack& s, const Limits& limits) {
+	if (exceeds(static_cast<size_t>(s.frames_size()), limits.max_frames)) {
+		throw InvalidBatch(std::format("stack has more than {} frames", limits.max_frames));
+	}
 	model::Stack out;
 	out.reserve(static_cast<size_t>(s.frames_size()));
 	for (const auto& f : s.frames()) {
+		check_string(f.function(), limits, "frame function");
+		check_string(f.module(), limits, "frame module");
 		out.push_back(
 		        model::Frame{f.address(), f.function(), f.module(), static_cast<model::FrameKind>(f.kind())});
 	}
@@ -92,12 +115,16 @@ void chain_to_proto(const std::vector<model::Hop>& c, Msg* out) {
 }
 
 template <class Msg>
-std::vector<model::Hop> chain_from_proto(const Msg& m) {
+std::vector<model::Hop> chain_from_proto(const Msg& m, const Limits& limits) {
+	if (exceeds(static_cast<size_t>(m.chain_size()), limits.max_hops)) {
+		throw InvalidBatch(std::format("chain has more than {} hops", limits.max_hops));
+	}
 	std::vector<model::Hop> out;
 	out.reserve(static_cast<size_t>(m.chain_size()));
 	for (const auto& h : m.chain()) {
-		out.push_back(model::Hop{task_from_proto(h.task()), stack_from_proto(h.wake_stack()),
-		                         stack_from_proto(h.wait_stack()), h.wait_ns(), trace_from_proto(h.trace())});
+		out.push_back(model::Hop{task_from_proto(h.task(), limits), stack_from_proto(h.wake_stack(), limits),
+		                         stack_from_proto(h.wait_stack(), limits), h.wait_ns(),
+		                         trace_from_proto(h.trace())});
 	}
 	return out;
 }
@@ -146,31 +173,47 @@ void to_proto(const model::Batch& b, pb::Batch& out) {
 	}
 }
 
-model::Batch from_proto(const pb::Batch& p) {
+model::Batch from_proto(const pb::Batch& p, const Limits& limits) {
 	if (p.id().empty()) {
 		throw InvalidBatch("batch id is required");
 	}
+	check_string(p.id(), limits, "batch id");
 	if (p.resource().node().empty()) {
 		throw InvalidBatch("batch resource node is required");
 	}
 	if (p.window_end_unix_nano() < p.window_start_unix_nano()) {
 		throw InvalidBatch("batch window end precedes start");
 	}
+	if (exceeds(static_cast<size_t>(p.offcpu_size()), limits.max_samples)) {
+		throw InvalidBatch(std::format("batch has more than {} samples", limits.max_samples));
+	}
+	if (exceeds(static_cast<size_t>(p.events_size()), limits.max_events)) {
+		throw InvalidBatch(std::format("batch has more than {} events", limits.max_events));
+	}
 	const auto& r = p.resource();
+	check_string(r.node(), limits, "resource node");
+	check_string(r.agent_id(), limits, "agent id");
+	check_string(r.agent_version(), limits, "agent version");
+	if (exceeds(r.labels_size(), limits.max_labels)) {
+		throw InvalidBatch(std::format("resource has more than {} labels", limits.max_labels));
+	}
 	model::Batch b;
 	b.id = p.id();
 	b.resource.node = r.node();
 	b.resource.agent_id = r.agent_id();
 	b.resource.agent_version = r.agent_version();
 	for (const auto& [k, v] : r.labels()) {
+		check_string(k, limits, "label key");
+		check_string(v, limits, "label value");
 		b.resource.labels[k] = v;
 	}
 	b.window_start = from_unix_nano(p.window_start_unix_nano());
 	b.window_end = from_unix_nano(p.window_end_unix_nano());
 	b.offcpu.reserve(static_cast<size_t>(p.offcpu_size()));
 	for (const auto& s : p.offcpu()) {
-		b.offcpu.push_back(model::OffCPUSample{task_from_proto(s.task()), stack_from_proto(s.stack()),
-		                                       chain_from_proto(s), s.blocked_ns(), s.count(),
+		b.offcpu.push_back(model::OffCPUSample{task_from_proto(s.task(), limits),
+		                                       stack_from_proto(s.stack(), limits), chain_from_proto(s, limits),
+		                                       s.blocked_ns(), s.count(),
 		                                       static_cast<model::OffCPUReason>(s.reason())});
 	}
 	b.events.reserve(static_cast<size_t>(p.events_size()));
@@ -178,11 +221,11 @@ model::Batch from_proto(const pb::Batch& p) {
 		if (e.end_unix_nano() < e.start_unix_nano()) {
 			throw InvalidBatch("event end precedes start");
 		}
-		b.events.push_back(
-		        model::OffCPUEvent{task_from_proto(e.task()), stack_from_proto(e.stack()), chain_from_proto(e),
-		                           from_unix_nano(e.start_unix_nano()), from_unix_nano(e.end_unix_nano()),
-		                           static_cast<model::OffCPUReason>(e.reason()), trace_from_proto(e.trace()),
-		                           model::GPUWait{e.gpu_stream(), e.gpu_launches()}});
+		b.events.push_back(model::OffCPUEvent{
+		        task_from_proto(e.task(), limits), stack_from_proto(e.stack(), limits),
+		        chain_from_proto(e, limits), from_unix_nano(e.start_unix_nano()),
+		        from_unix_nano(e.end_unix_nano()), static_cast<model::OffCPUReason>(e.reason()),
+		        trace_from_proto(e.trace()), model::GPUWait{e.gpu_stream(), e.gpu_launches()}});
 	}
 	return b;
 }

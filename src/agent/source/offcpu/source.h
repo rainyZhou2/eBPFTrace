@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "agent/plugin.h"
+#include "agent/policy.h"
 #include "agent/source/offcpu/bpf_object.h"
 #include "agent/source/offcpu/decode.h"
 #include "agent/source/offcpu/options.h"
@@ -54,6 +55,7 @@ public:
 	// with launch tracking probes.
 	size_t gpu_libraries_probed();
 	size_t gpu_launch_libraries_probed();
+	std::string unwind_mode() const;
 	void sync_gpu_probes();
 	// unwind_loaded reports whether the walker has mappings for tgid.
 	bool unwind_loaded(uint32_t tgid);
@@ -74,6 +76,10 @@ private:
 	                 std::set<uint32_t>& tids);
 	void report_drops();
 	void close_locked();
+	policy::Signals policy_signals();
+	void apply_policy(const policy::Decision& decision);
+	uint64_t bpf_drop_count() const;
+	uint32_t process_count() const;
 	static int on_event(void* ctx, void* data, size_t size);
 
 	Options opts_;
@@ -117,6 +123,19 @@ private:
 	prometheus::Gauge& gpu_unsupported_;
 	prometheus::Gauge& gpu_launch_tracking_;
 	unwinder::Metrics unwind_metrics_;
+
+	std::atomic<uint32_t> max_events_{20000};
+	std::atomic<uint32_t> sample_percent_{100};
+	std::atomic<uint32_t> unwind_depth_{64};
+	std::atomic<int> active_unwind_mode_{0};
+	bool dwarf_loaded_ = false;
+	std::atomic<uint64_t> policy_events_{0};
+	std::atomic<uint64_t> policy_dropped_{0};
+	std::unique_ptr<policy::Controller> policy_;
+	std::jthread policy_thread_;
+	prometheus::Gauge& event_limit_;
+	prometheus::Gauge& event_sample_;
+	prometheus::Gauge& unwind_depth_gauge_;
 };
 
 }  // namespace etrace::agent::offcpu

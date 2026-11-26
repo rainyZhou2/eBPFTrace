@@ -553,5 +553,24 @@ TEST(Kernel, BlockedListsGpuWaitsInProgress) {
 	EXPECT_EQ(c.wait().first, 0);
 }
 
+TEST(Kernel, AdaptivePolicyRunsWhileCollecting) {
+	REQUIRE_BPF();
+	Options o;
+	o.target_pid = getpid();
+	o.trace_context.enabled = false;
+	o.policy.enabled = true;
+	o.policy.interval = 100ms;
+	o.policy.cooldown = 0s;
+	o.policy.max_cpu_ratio = 0;
+	o.policy.max_drop_rate = 1e9;
+	o.policy.max_processes = 0;
+	o.policy.allow_mode_switch = true;
+	Harness h(o);
+	EXPECT_NO_THROW(h.collect());
+	std::this_thread::sleep_for(400ms);
+	EXPECT_EQ(h.src->unwind_mode(), "frame_pointer");
+	EXPECT_NO_THROW(h.collect());
+}
+
 }  // namespace
 }  // namespace etrace

@@ -3,6 +3,7 @@
 #include <bpf/libbpf.h>
 #include <time.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
@@ -47,6 +48,23 @@ uint64_t ns(Duration d) {
 	return static_cast<uint64_t>(d.count());
 }
 
+bool has_trace(const RawTrace& trace) {
+	for (auto byte : trace.trace_id) {
+		if (byte != 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool keep_event(const RawEvent& event, uint32_t percent) {
+	if (percent >= 100 || has_trace(event.trace)) {
+		return true;
+	}
+	uint64_t key = event.start_ns ^ (static_cast<uint64_t>(event.pid) << 32) ^ event.tgid;
+	return key % 100 < percent;
+}
+
 }  // namespace
 
 Source::Source(Options o, Deps deps)
@@ -65,7 +83,18 @@ Source::Source(Options o, Deps deps)
                                            "Set to 1 when GPU waits are enabled but the kernel cannot run them.")),
       gpu_launch_tracking_(deps.registry.gauge("etrace_offcpu_gpu_launch_tracking",
                                                "Set to 1 while kernel launches are probed to name GPU waits.")),
-      unwind_metrics_(deps.registry) {}
+      unwind_metrics_(deps.registry),
+      event_limit_(deps.registry.gauge("etrace_offcpu_event_limit",
+                                       "Maximum buffered off-CPU events per collection interval.")),
+      event_sample_(deps.registry.gauge("etrace_offcpu_event_sample_percent",
+                                        "Percentage of untraced off-CPU events retained.")),
+      unwind_depth_gauge_(
+              deps.registry.gauge("etrace_offcpu_unwind_depth", "Maximum user and kernel stack frames emitted.")) {
+	max_events_.store(static_cast<uint32_t>(opts_.max_events_per_interval));
+	event_limit_.Set(static_cast<double>(max_events_.load()));
+	event_sample_.Set(static_cast<double>(sample_percent_.load()));
+	unwind_depth_gauge_.Set(static_cast<double>(unwind_depth_.load()));
+}
 
 Source::~Source() {
 	close();
@@ -132,6 +161,8 @@ void Source::start() {
 	}
 	auto [obj, mode] = load();
 	obj_ = std::move(obj);
+	dwarf_loaded_ = mode == kUnwindDwarf;
+	active_unwind_mode_.store(dwarf_loaded_ ? 1 : 2);
 	unwinder_mode_.Add({{"mode", mode}}).Set(1);
 	try {
 		std::vector<std::string> progs{"on_switch", "on_waking", "on_exit"};
@@ -160,6 +191,19 @@ void Source::start() {
 		}
 		if (gpu_) {
 			start_gpu();
+		}
+		if (opts_.policy.enabled) {
+			policy::Decision initial{std::clamp(max_events_.load(), opts_.policy.min_events_per_interval,
+			                                    opts_.policy.max_events_per_interval),
+			                         std::clamp(unwind_depth_.load(), opts_.policy.min_unwind_depth,
+			                                    opts_.policy.max_unwind_depth),
+			                         std::clamp(sample_percent_.load(), opts_.policy.min_sample_percent,
+			                                    opts_.policy.max_sample_percent),
+			                         mode};
+			policy_ = std::make_unique<policy::Controller>(
+			        opts_.policy, std::move(initial), [this] { return policy_signals(); },
+			        [this](const policy::Decision& d) { apply_policy(d); }, log_);
+			policy_thread_ = std::jthread([this](std::stop_token st) { policy_->run(st); });
 		}
 	} catch (...) {
 		close_locked();
@@ -254,6 +298,7 @@ int Source::on_event(void* ctx, void* data, size_t size) {
 	auto ev = decode_event(std::span(static_cast<const char*>(data), size));
 	if (!ev) {
 		s->events_dropped_.Increment();
+		s->policy_dropped_.fetch_add(1);
 		return 0;
 	}
 	s->batch_.push_back(*ev);
@@ -275,33 +320,48 @@ void Source::read_events(std::stop_token st) {
 			continue;
 		}
 		size_t accepted = 0, dropped = 0;
+		auto limit = max_events_.load();
+		auto sample = sample_percent_.load();
 		{
 			std::lock_guard lock(ev_mu_);
-			auto room = static_cast<size_t>(opts_.max_events_per_interval) -
-			            std::min(pending_.size(), static_cast<size_t>(opts_.max_events_per_interval));
-			accepted = std::min(room, batch_.size());
-			pending_.insert(pending_.end(), batch_.begin(),
-			                batch_.begin() + static_cast<std::ptrdiff_t>(accepted));
-			dropped = batch_.size() - accepted;
+			auto room = static_cast<size_t>(limit) - std::min(pending_.size(), static_cast<size_t>(limit));
+			for (const auto& event : batch_) {
+				if (accepted >= room) {
+					dropped++;
+					continue;
+				}
+				if (!keep_event(event, sample)) {
+					dropped++;
+					continue;
+				}
+				pending_.push_back(event);
+				accepted++;
+			}
 		}
 		batch_.clear();
 		if (accepted) {
 			events_.Increment(static_cast<double>(accepted));
+			policy_events_.fetch_add(accepted);
 		}
 		if (dropped) {
 			events_dropped_.Increment(static_cast<double>(dropped));
+			policy_dropped_.fetch_add(dropped);
 		}
 	}
 }
 
 StackLookup Source::stack_lookup(std::unordered_map<uint64_t, std::vector<uint64_t>>& cache) const {
 	int fd = obj_->map_fd("stacks");
-	return [fd, &cache](uint64_t id) -> const std::vector<uint64_t>& {
+	return [fd, &cache, this](uint64_t id) -> const std::vector<uint64_t>& {
 		auto [it, inserted] = cache.try_emplace(id);
 		if (inserted) {
 			RawStack st{};
 			if (bpf_map_lookup_elem(fd, &id, &st) == 0) {
 				it->second = stack_ips(st);
+				auto depth = unwind_depth_.load();
+				if (it->second.size() > depth) {
+					it->second.resize(depth);
+				}
 			}
 		}
 		return it->second;
@@ -514,6 +574,10 @@ size_t Source::gpu_libraries_probed() {
 	return gpu_probes_ ? gpu_probes_->attached() : 0;
 }
 
+std::string Source::unwind_mode() const {
+	return active_unwind_mode_.load() == 1 ? kUnwindDwarf : kUnwindFramePointer;
+}
+
 size_t Source::gpu_launch_libraries_probed() {
 	std::lock_guard lock(gpu_mu_);
 	return launch_probes_ ? launch_probes_->attached() : 0;
@@ -544,12 +608,95 @@ void Source::report_drops() {
 	}
 }
 
+uint64_t Source::bpf_drop_count() const {
+	if (!obj_) {
+		return 0;
+	}
+	auto fd = obj_->map_fd("drops");
+	uint64_t total = 0;
+	for (uint32_t i = 0; i < std::size(kDropReasons); i++) {
+		uint64_t value = 0;
+		if (bpf_map_lookup_elem(fd, &i, &value) == 0) {
+			total += value;
+		}
+	}
+	return total;
+}
+
+uint32_t Source::process_count() const {
+	std::error_code ec;
+	if (opts_.target_pid != 0) {
+		auto path = std::filesystem::path(proc_root_) / std::to_string(opts_.target_pid);
+		return std::filesystem::exists(path, ec) ? 1 : 0;
+	}
+	uint32_t count = 0;
+	for (const auto& entry : std::filesystem::directory_iterator(proc_root_, ec)) {
+		auto name = entry.path().filename().string();
+		if (!name.empty() && name.find_first_not_of("0123456789") == std::string::npos && name != "0") {
+			count++;
+		}
+	}
+	return ec ? 0 : count;
+}
+
+policy::Signals Source::policy_signals() {
+	policy::Signals signals;
+	signals.cpu_seconds = policy::process_cpu_seconds();
+	signals.events = policy_events_.load();
+	signals.events_dropped = policy_dropped_.load();
+	signals.bpf_drops = bpf_drop_count();
+	signals.processes = process_count();
+	auto mode = active_unwind_mode_.load();
+	signals.unwind_mode = mode == 1 ? kUnwindDwarf : kUnwindFramePointer;
+	signals.dwarf_available = dwarf_loaded_;
+	return signals;
+}
+
+void Source::apply_policy(const policy::Decision& decision) {
+	if (!obj_) {
+		return;
+	}
+	auto events = std::max(1u, decision.max_events_per_interval);
+	auto sample = std::min(100u, decision.sample_percent);
+	auto depth = std::clamp(decision.unwind_depth, 1u, static_cast<uint32_t>(policy::kMaxUnwindDepth));
+	max_events_.store(events);
+	sample_percent_.store(sample);
+	unwind_depth_.store(depth);
+	event_limit_.Set(static_cast<double>(events));
+	event_sample_.Set(static_cast<double>(sample));
+	unwind_depth_gauge_.Set(static_cast<double>(depth));
+
+	if (dwarf_loaded_ && !decision.unwind_mode.empty()) {
+		int mode = decision.unwind_mode == kUnwindFramePointer ? 1 : 0;
+		struct {
+			uint32_t depth;
+			uint32_t mode;
+		} config{depth, static_cast<uint32_t>(mode)};
+		uint32_t zero = 0;
+		if (bpf_map_update_elem(obj_->map_fd("unwind_config"), &zero, &config, BPF_ANY) != 0) {
+			log_.warn("apply unwind policy failed", {{"err", std::strerror(errno)}});
+		} else {
+			auto previous = active_unwind_mode_.exchange(mode == 0 ? 1 : 2);
+			if (previous != 0 && previous != (mode == 0 ? 1 : 2)) {
+				unwinder_mode_.Add({{"mode", previous == 1 ? kUnwindDwarf : kUnwindFramePointer}})
+				        .Set(0);
+				unwinder_mode_.Add({{"mode", mode == 0 ? kUnwindDwarf : kUnwindFramePointer}}).Set(1);
+			}
+		}
+	}
+}
+
 void Source::close() {
 	std::lock_guard lock(mu_);
 	close_locked();
 }
 
 void Source::close_locked() {
+	if (policy_thread_.joinable()) {
+		policy_thread_.request_stop();
+		policy_thread_.join();
+	}
+	policy_.reset();
 	if (unwind_thread_.joinable()) {
 		unwind_thread_.request_stop();
 		unwind_thread_.join();

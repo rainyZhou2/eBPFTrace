@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "agent/policy.h"
 #include "platform/config.h"
 #include "platform/time.h"
 
@@ -63,6 +64,7 @@ struct Options {
 	TraceContextOptions trace_context;
 	UnwindOptions unwind;
 	GPUOptions gpu;
+	policy::Config policy;
 
 	void validate() const;
 };

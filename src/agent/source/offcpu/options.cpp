@@ -25,7 +25,8 @@ void decode_fields(config::Fields& f, Options& o) {
 	f("target_pid", o.target_pid)("min_block", o.min_block)("max_block", o.max_block)(
 	        "include_preempted", o.include_preempted)("user_stacks", o.user_stacks)("chain_depth", o.chain_depth)(
 	        "slow_event", o.slow_event)("max_events_per_interval", o.max_events_per_interval)(
-	        "drain_grace", o.drain_grace)("trace_context", o.trace_context)("unwind", o.unwind)("gpu", o.gpu);
+	        "drain_grace", o.drain_grace)("trace_context", o.trace_context)("unwind", o.unwind)("gpu", o.gpu)(
+	        "policy", o.policy);
 }
 
 void Options::validate() const {
@@ -59,6 +60,7 @@ void Options::validate() const {
 			throw Error("unwind.refresh_interval must be at least 100ms");
 		}
 	}
+	policy.validate();
 	if (trace_context.enabled) {
 		if (trace_context.symbol.empty()) {
 			throw Error("trace_context.symbol is required");

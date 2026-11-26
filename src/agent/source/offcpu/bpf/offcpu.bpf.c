@@ -470,8 +470,17 @@ struct unwind_state {
 	__u64 lr;
 	__u32 tgid;
 	__u32 len;
+	__u32 limit;
 	__u8 missed;
-	__u8 _pad[7];
+	__u8 _pad[3];
+};
+
+#define UNWIND_MODE_DWARF 0
+#define UNWIND_MODE_FRAME_POINTER 1
+
+struct unwind_config {
+	__u32 depth;
+	__u32 mode;
 };
 
 #if defined(__TARGET_ARCH_x86)
@@ -491,6 +500,7 @@ struct pt_regs___user {
 /* Max entries are sized by the agent before load. */
 DEFINE_MAP(unwind_rows, BPF_MAP_TYPE_ARRAY, __u32, struct unwind_row, 1);
 DEFINE_MAP(unwind_miss, BPF_MAP_TYPE_LRU_HASH, __u32, __u64, 4096);
+DEFINE_MAP(unwind_config, BPF_MAP_TYPE_ARRAY, __u32, struct unwind_config, 1);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -617,7 +627,7 @@ static long unwind_step(__u32 i, void *arg)
 	struct unwind_state *u = arg;
 	__u32 zero = 0;
 	struct stack *s = bpf_map_lookup_elem(&scratch_stack, &zero);
-	if (!s || u->len >= MAX_STACK_DEPTH)
+	if (!s || u->len >= u->limit)
 		return 1;
 	s->ips[u->len & (MAX_STACK_DEPTH - 1)] = u->pc;
 	u->len++;
@@ -657,7 +667,15 @@ static __always_inline __u64 capture_user_stack(void *ctx)
 	if (!regs)
 		return capture_stack(ctx, BPF_F_USER_STACK);
 
-	struct unwind_state u = { .tgid = tgid };
+	struct unwind_config *cfg = bpf_map_lookup_elem(&unwind_config, &zero);
+	__u32 limit = MAX_STACK_DEPTH;
+	if (cfg) {
+		if (cfg->depth > 0 && cfg->depth < limit)
+			limit = cfg->depth;
+		if (cfg->mode == UNWIND_MODE_FRAME_POINTER)
+			return capture_stack(ctx, BPF_F_USER_STACK);
+	}
+	struct unwind_state u = { .tgid = tgid, .limit = limit };
 #if defined(__TARGET_ARCH_x86)
 	u.pc = BPF_CORE_READ(regs, ip);
 	u.sp = BPF_CORE_READ(regs, sp);

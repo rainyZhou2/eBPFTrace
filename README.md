@@ -166,6 +166,10 @@ Applications publish the active trace and span IDs per thread through `libetrace
 
 The `sched_switch` and `sched_waking` hooks capture kernel and user stacks synchronously; the DWARF user-stack walker is the expensive part. `unwind.mode: frame_pointer` reduces that cost, and `min_block` filters short waits from the output (it does not reduce capture cost). Published overhead benchmarks are not available yet; measure on your workload before enabling it fleet-wide.
 
+### Adaptive collection
+
+The off-CPU source can run an `agent/policy` controller when `policy.enabled` is true. Each interval it samples the BPF drop counters, agent CPU time, accepted event rate, process count, and active unwind mode. Under CPU, drop, event-rate, or process pressure it lowers `max_events_per_interval`, stack depth, and the untraced-event sample rate; after `cooldown` with headroom it raises them again. On a DWARF-loaded source it can also switch to frame pointers; a frame-pointer-only source cannot switch back to DWARF. Trace-context events are never sampled. The controller changes only source limits through a narrow adapter; BPF capture, processors, and exporters keep their own contracts. `configs/agent.yaml` enables it with conservative thresholds; leave `policy.enabled: false` to use static limits.
+
 ## Architecture
 
 ```mermaid

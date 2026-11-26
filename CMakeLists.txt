@@ -137,7 +137,8 @@ etrace_library(etrace_symbol
   DEPS etrace_platform)
 etrace_library(etrace_unwind SOURCES src/unwind/unwind.cpp DEPS etrace_symbol)
 etrace_library(etrace_agent
-  SOURCES src/agent/pipeline.cpp src/agent/plugins.cpp src/agent/exporter/grpc.cpp src/agent/exporter/pyroscope.cpp
+  SOURCES src/agent/pipeline.cpp src/agent/plugins.cpp src/agent/policy.cpp
+          src/agent/exporter/grpc.cpp src/agent/exporter/pyroscope.cpp
           src/agent/processor/container.cpp src/agent/processor/symbolize.cpp
           src/agent/source/offcpu/options.cpp src/agent/source/offcpu/decode.cpp src/agent/source/offcpu/bpf_object.cpp
           src/agent/source/offcpu/uprobes.cpp src/agent/source/offcpu/gpu.cpp src/agent/source/offcpu/unwinder.cpp

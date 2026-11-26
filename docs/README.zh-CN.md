@@ -166,6 +166,10 @@ CUDA 驱动默认调度下，等待 GPU 的线程会在 CPU 上自旋，不进�
 
 `sched_switch` 和 `sched_waking` 钩子会同步采集内核栈和用户栈，其中 DWARF 用户栈回溯是主要开销。`unwind.mode: frame_pointer` 可以降低这部分成本；`min_block` 只过滤输出中的短等待，**不会降低采集开销**。目前还没有公开的开销基准数据；在全机部署前请先在自己的负载上测量。
 
+### 自适应采集
+
+`policy.enabled` 为 true 时，off-CPU source 会运行 `agent/policy` 控制器。控制器按周期采样 BPF drop 计数、agent CPU 时间、已接收事件速率、进程数和当前 unwind 模式；在 CPU、drop、事件速率或进程数超阈值时，降低 `max_events_per_interval`、栈深度和未带 trace 的事件采样率；在 `cooldown` 内持续有余量后再恢复。加载 DWARF 的 source 还能切到 frame pointer；只加载 frame pointer 的 source 不能切回 DWARF。带 trace 的事件不会被采样。控制器只通过窄适配器修改采集参数，BPF、processor 和 exporter 保持各自契约。`configs/agent.yaml` 默认用保守阈值启用；保持 `policy.enabled: false` 即使用静态限制。
+
 ## 架构
 
 ```mermaid

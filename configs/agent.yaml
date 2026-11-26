@@ -25,6 +25,20 @@ sources:
       chain_depth: 4
       slow_event: 50ms
       max_events_per_interval: 20000
+      policy:
+        enabled: true
+        interval: 10s
+        cooldown: 30s
+        min_events_per_interval: 1000
+        max_events_per_interval: 20000
+        min_unwind_depth: 16
+        max_unwind_depth: 64
+        min_sample_percent: 10
+        target_event_rate: 5000
+        max_cpu_ratio: 0.25
+        max_drop_rate: 0
+        max_processes: 2048
+        allow_mode_switch: true
       trace_context:
         enabled: true
         library_patterns: ["libetrace_ctx"]

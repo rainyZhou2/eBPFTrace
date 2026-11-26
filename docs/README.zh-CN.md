@@ -1,10 +1,28 @@
-# eTrace
+<h1 align="center">eTrace</h1>
 
-[![CI](https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](../LICENSE)
-![Platform: Linux 5.8+](https://img.shields.io/badge/platform-Linux%205.8%2B-lightgrey)
+<p align="center">
+  <strong>看清线程到底在等什么。</strong><br>
+  Linux 上的 off-CPU 唤醒链、CUDA/NCCL 等待与 OpenTelemetry span 归属。
+</p>
 
-[English](../README.md) | 简体中文
+<p align="center">
+  <a href="https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="../LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <img alt="Platform: Linux 5.8+" src="https://img.shields.io/badge/platform-Linux%205.8%2B-lightgrey">
+  <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-blue">
+  <img alt="eBPF CO-RE" src="https://img.shields.io/badge/eBPF-CO--RE-8A2BE2">
+  <img alt="OpenTelemetry span attribution" src="https://img.shields.io/badge/OpenTelemetry-span%20attribution-6f42c1">
+  <img alt="ClickHouse storage" src="https://img.shields.io/badge/storage-ClickHouse-ffcc01">
+  <img alt="Kubernetes deployment" src="https://img.shields.io/badge/deploy-Kubernetes-326CE5">
+</p>
+
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#工作原理">工作原理</a> ·
+  <a href="#架构">架构</a> ·
+  <a href="#集群部署">集群部署</a> ·
+  <a href="../README.md">English</a>
+</p>
 
 **eTrace 是 Linux 上的 eBPF 等待时间分析器。** 它记录线程在哪里离开 CPU 阻塞、是哪个唤醒者结束了等待，以及 CUDA 线程在哪里等待 GPU。等待时间会归属到阻塞线程当时活跃的 OpenTelemetry span，因此一个慢请求或一个训练 step 可以一路追溯到拖住它的锁、I/O 或 GPU kernel。eTrace 可以直接附加到已经运行的进程，profiler 本身无需重启或重新编译；span 归属额外使用一个很小的 `libetrace_ctx` SDK（见[应用接入](#应用接入)）。
 
@@ -17,7 +35,9 @@ api  futex_wait
          └─ woken by [hardirq]  hrtimer_wakeup
 ```
 
-> **状态：1.0 之前。** 单元测试覆盖 amd64 与 arm64；BPF 内核测试在 QEMU 中覆盖 Linux 5.15 与 6.8。部署前请先阅读[项目状态与已知限制](#项目状态与已知限制)。
+<p align="center">
+  <sub><b>状态：1.0 之前。</b>单元测试覆盖 amd64/arm64；ClickHouse 与 e2e 链路已在 CI 中运行，BPF 内核测试在 QEMU 中覆盖 Linux 5.15 与 6.8。部署前请先阅读<a href="#项目状态与已知限制">项目状态与已知限制</a>。</sub>
+</p>
 
 ## 目录
 

@@ -1,10 +1,28 @@
-# eTrace
+<h1 align="center">eTrace</h1>
 
-[![CI](https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Platform: Linux 5.8+](https://img.shields.io/badge/platform-Linux%205.8%2B-lightgrey)
+<p align="center">
+  <strong>Find what your threads wait on.</strong><br>
+  Off-CPU wakeup chains, CUDA/NCCL waits, and OpenTelemetry span attribution for Linux.
+</p>
 
-English | [简体中文](docs/README.zh-CN.md)
+<p align="center">
+  <a href="https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/rainyZhou2/eBPFTrace/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <img alt="Platform: Linux 5.8+" src="https://img.shields.io/badge/platform-Linux%205.8%2B-lightgrey">
+  <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-blue">
+  <img alt="eBPF CO-RE" src="https://img.shields.io/badge/eBPF-CO--RE-8A2BE2">
+  <img alt="OpenTelemetry span attribution" src="https://img.shields.io/badge/OpenTelemetry-span%20attribution-6f42c1">
+  <img alt="ClickHouse storage" src="https://img.shields.io/badge/storage-ClickHouse-ffcc01">
+  <img alt="Kubernetes deployment" src="https://img.shields.io/badge/deploy-Kubernetes-326CE5">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#cluster-deployment">Deployment</a> ·
+  <a href="docs/README.zh-CN.md">简体中文</a>
+</p>
 
 **eTrace is an eBPF profiler for wait time on Linux.** It records where threads block off-CPU, which waker ended the wait, and where CUDA threads wait on the GPU. Waits are attributed to the OpenTelemetry span that was active on the blocked thread, so a slow request or training step can be traced to the lock, I/O, or GPU kernel that held it up. It attaches to processes that are already running; the profiler itself needs no restart and no rebuild. Span attribution additionally uses the small `libetrace_ctx` SDK (see [Instrumenting applications](#instrumenting-applications)).
 
@@ -17,7 +35,9 @@ api  futex_wait
          └─ woken by [hardirq]  hrtimer_wakeup
 ```
 
-> **Status: pre-1.0.** Unit tests run on amd64 and arm64, and the BPF kernel suite runs in QEMU on Linux 5.15 and 6.8. See [Project status and limitations](#project-status-and-limitations) before deploying it.
+<p align="center">
+  <sub><b>Status: pre-1.0.</b> Unit tests run on amd64 and arm64; the ClickHouse and e2e stacks run in CI, and the BPF kernel suite runs in QEMU on Linux 5.15 and 6.8. See <a href="#project-status-and-limitations">Project status and limitations</a> before deploying.</sub>
+</p>
 
 ## Contents
 

@@ -16,12 +16,12 @@ CONFIGURE = cmake -S /src -B /build -G Ninja \
 	-DVCPKG_INSTALLED_DIR=/opt/vcpkg_installed -DVCPKG_MANIFEST_INSTALL=OFF \
 	-DETRACE_VERSION=$(VERSION) $(CMAKE_FLAGS)
 
-.PHONY: all builder build test test-clickhouse test-kernel kernel-bin scenarios e2e e2e-scenario image fmt fmt-check bpf-ide-headers ide clean
+.PHONY: all builder build test test-clickhouse test-kernel kernel-bin scenarios e2e e2e-scenario image image-push fmt fmt-check bpf-ide-headers ide clean
 
 all: build
 
 builder:
-	docker build $(BUILDER_BUILD_ARGS) -f build/cpp-builder.Dockerfile -t $(BUILDER) .
+	docker buildx build --load $(BUILDER_BUILD_ARGS) -f build/cpp-builder.Dockerfile -t $(BUILDER) .
 
 build:
 	@mkdir -p bin
@@ -44,11 +44,15 @@ test-clickhouse:
 	-docker network create etrace-test >/dev/null 2>&1
 	-docker rm -f etrace-ch >/dev/null 2>&1
 	docker run -d --name etrace-ch --network etrace-test -e CLICKHOUSE_USER=etrace -e CLICKHOUSE_PASSWORD=etrace $(CLICKHOUSE_IMAGE) >/dev/null
-	until docker exec etrace-ch clickhouse-client --user etrace --password etrace -q 'SELECT 1' >/dev/null 2>&1; do sleep 1; done
+	ok=; for i in $$(seq 1 120); do \
+		if docker exec etrace-ch clickhouse-client --user etrace --password etrace -q 'SELECT 1' >/dev/null 2>&1; then ok=1; break; fi; \
+		sleep 1; \
+	done; \
+	if [ -z "$$ok" ]; then docker logs etrace-ch; docker rm -f etrace-ch >/dev/null; exit 1; fi
 	docker run --rm --network etrace-test -e ETRACE_CLICKHOUSE_ADDR=etrace-ch:9000 \
 		-e ETRACE_CLICKHOUSE_USER=etrace -e ETRACE_CLICKHOUSE_PASSWORD=etrace \
 		-v $(CURDIR):/src -v $(BUILD_VOLUME):/build $(BUILDER) \
-		sh -c 'ninja -C /build etrace_tests && /build/etrace_tests --gtest_filter=ClickHouse.*'; \
+		sh -c '$(CONFIGURE) >/dev/null && ninja -C /build etrace_tests && /build/etrace_tests --gtest_filter=ClickHouse.*'; \
 	status=$$?; docker rm -f etrace-ch >/dev/null; exit $$status
 
 scenarios:
@@ -87,7 +91,11 @@ e2e: build scenarios e2e-scenario
 	HOST_ARCH=$(HOST_ARCH) test/e2e/stack/run.sh
 
 image:
-	docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=$(VERSION) -f build/Dockerfile -t $(IMAGE):$(VERSION) .
+	docker buildx build --platform linux/$(HOST_ARCH) --load --build-arg VERSION=$(VERSION) -f build/Dockerfile -t $(IMAGE):$(VERSION) .
+	docker tag $(IMAGE):$(VERSION) $(IMAGE):latest
+
+image-push:
+	docker buildx build --platform linux/amd64,linux/arm64 --push --build-arg VERSION=$(VERSION) -f build/Dockerfile -t $(IMAGE):$(VERSION) .
 
 fmt:
 	$(IN_BUILDER) sh -c 'cd /src && find src test -name "*.cpp" -o -name "*.h" | xargs clang-format -i'

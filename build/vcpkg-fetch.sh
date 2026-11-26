@@ -1,7 +1,8 @@
 #!/bin/sh
 # vcpkg asset source (X_VCPKG_ASSET_SOURCES=x-script): routes GitHub downloads
-# through GITHUB_PROXY and sourceware downloads through SOURCEWARE_MIRROR when
-# the origins are not reachable at a usable speed.
+# through GITHUB_PROXY, sourceware downloads through SOURCEWARE_MIRROR, and
+# GNU downloads through GNU_MIRROR when the origins are not reachable at a
+# usable speed.
 set -eu
 url="$1"
 dst="$2"
@@ -14,6 +15,21 @@ https://github.com/* | https://raw.githubusercontent.com/* | https://objects.git
 https://sourceware.org/pub/*)
 	if [ -n "${SOURCEWARE_MIRROR:-}" ]; then
 		url="${SOURCEWARE_MIRROR%/}/${url#https://sourceware.org/pub/}"
+	fi
+	;;
+https://ftpmirror.gnu.org/gnu/*)
+	if [ -n "${GNU_MIRROR:-}" ]; then
+		url="${GNU_MIRROR%/}/${url#https://ftpmirror.gnu.org/gnu/}"
+	fi
+	;;
+https://ftp.gnu.org/gnu/*)
+	if [ -n "${GNU_MIRROR:-}" ]; then
+		url="${GNU_MIRROR%/}/${url#https://ftp.gnu.org/gnu/}"
+	fi
+	;;
+https://www.mirrorservice.org/sites/ftp.gnu.org/gnu/*)
+	if [ -n "${GNU_MIRROR:-}" ]; then
+		url="${GNU_MIRROR%/}/${url#https://www.mirrorservice.org/sites/ftp.gnu.org/gnu/}"
 	fi
 	;;
 esac

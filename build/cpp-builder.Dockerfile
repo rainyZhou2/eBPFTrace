@@ -2,12 +2,15 @@
 # --build-arg BASE_IMAGE=docker.1ms.run/library/debian:trixie,
 # --build-arg APT_MIRROR=mirrors.huaweicloud.com and
 # --build-arg GITHUB_PROXY=https://gh-proxy.com when those are faster.
+# ftpmirror.gnu.org redirects to mirrors with rotating certificates; GNU_MIRROR
+# keeps the GNU downloads on a stable origin unless a faster mirror is given.
 ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE}
 ARG APT_MIRROR=deb.debian.org
 ARG GITHUB_PROXY=
 ARG VCPKG_TAG=2026.10.16
 ARG SOURCEWARE_MIRROR=
+ARG GNU_MIRROR=https://ftp.gnu.org/gnu
 RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
        build-essential cmake ninja-build pkg-config git curl ca-certificates zip unzip tar \
@@ -23,6 +26,7 @@ RUN if [ "$(dpkg --print-architecture)" = amd64 ]; then \
     fi
 ENV GITHUB_PROXY=${GITHUB_PROXY} \
     SOURCEWARE_MIRROR=${SOURCEWARE_MIRROR} \
+    GNU_MIRROR=${GNU_MIRROR} \
     VCPKG_ROOT=/opt/vcpkg \
     VCPKG_FORCE_SYSTEM_BINARIES=1 \
     VCPKG_DISABLE_METRICS=1 \

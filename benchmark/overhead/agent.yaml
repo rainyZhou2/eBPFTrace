@@ -11,6 +11,7 @@ sources:
       min_block: 1us
       chain_depth: 0
       user_stacks: true
+      sample_percent: 10
       slow_event: 0
       trace_context:
         enabled: false

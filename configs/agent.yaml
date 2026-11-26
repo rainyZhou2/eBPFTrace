@@ -21,6 +21,7 @@ sources:
     options:
       min_block: 1ms
       user_stacks: true
+      sample_percent: 10
       include_preempted: false
       chain_depth: 4
       slow_event: 50ms
@@ -34,6 +35,7 @@ sources:
         min_unwind_depth: 16
         max_unwind_depth: 64
         min_sample_percent: 10
+        max_sample_percent: 10
         target_event_rate: 5000
         max_cpu_ratio: 0.25
         max_drop_rate: 0

@@ -252,6 +252,14 @@ TEST(Offcpu, DecodeEventAndChain) {
 	EXPECT_EQ(smp.count, 4u);
 }
 
+TEST(OffcpuOptions, RejectsInvalidSamplePercent) {
+	agent::offcpu::Options o;
+	o.sample_percent = 101;
+	EXPECT_THROW(o.validate(), Error);
+	o.sample_percent = -1;
+	EXPECT_THROW(o.validate(), Error);
+}
+
 TEST(Uprobes, MatchMaps) {
 	std::istringstream maps(R"(7f0000000000-7f0000001000 r-xp 00000000 08:01 11 /usr/lib/libetrace_ctx.so
 7f0000001000-7f0000002000 r--p 00001000 08:01 11 /usr/lib/libetrace_ctx.so

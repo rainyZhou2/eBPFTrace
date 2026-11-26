@@ -171,7 +171,7 @@ CUDA 驱动默认调度下，等待 GPU 的线程会在 CPU 上自旋，不进�
 
 `policy.enabled` 为 true 时，off-CPU source 会运行 `agent/policy` 控制器。控制器按周期采样 BPF drop 计数、BPF `run_time_ns`/`run_cnt`、原始等待速率、已接收事件速率、Ring Buffer drop、用户态队列饱和度、agent CPU 时间、进程数和当前 unwind 模式。在 CPU、BPF 运行时间、drop、原始速率、Ring Buffer、队列或进程数超阈值时，降低 `max_events_per_interval`、栈深度和未带 trace 的事件采样率；在 `cooldown` 内持续有余量后再恢复。已接收速率和策略主动采样丢弃不计入压力信号，避免“降采样后误判压力消失”的振荡。加载 DWARF 的 source 还能切到 frame pointer；只加载 frame pointer 的 source 不能切回 DWARF。带 trace 的事件不会被采样。
 
-采样在等待开始时决定，并写入等待记录，因此同一次等待会整体保留或整体跳过，而不是在结束事件上独立随机决定。未采样的未带 trace 等待会在进入 Ring Buffer 前跳过用户栈回溯和事件提交；内核栈仍会采集，以保持聚合计数完整。控制器只有在 source 返回实际生效状态后才提交新状态，失败会在下一个周期重试。控制器只通过窄适配器修改采集参数，BPF、processor 和 exporter 保持各自契约。`configs/agent.yaml` 默认用保守阈值启用；保持 `policy.enabled: false` 即使用静态限制。
+采样在等待开始时决定，并写入等待记录，因此同一次等待会整体保留或整体跳过，而不是在结束事件上独立随机决定。未进入采样的未带 trace 等待会在进入 Ring Buffer 前跳过内核栈、用户栈和事件提交；它们的时间和次数仍进入聚合。带 trace 的等待始终完整采集。基础采样率是 `offcpu.sample_percent`（全量用 100，常驻用 10），控制器可在压力下继续降低。控制器只有在 source 返回实际生效状态后才提交新状态，失败会在下一个周期重试。控制器只通过窄适配器修改采集参数，BPF、processor 和 exporter 保持各自契约。`configs/agent.yaml` 默认用保守阈值启用，并用 `sample_percent: 10` 支持常驻；需要完整栈时改为 `100`，或保持 `policy.enabled: false` 使用静态限制。
 
 BPF 运行统计需要 `kernel.bpf_stats_enabled=1`；未开启时运行时间信号为 0，控制器回退到其他输入。该开关会让内核为每次程序执行记账，只建议诊断时开启：
 
@@ -184,11 +184,12 @@ sudo bpftool prog show
 
 在 Docker Desktop Linux 7.0.14（arm64、10 vCPU、8 GiB）上，用真实的 8 线程 pthread mutex/futex 负载运行 10 秒，`min_block=1us`、不产生事件、使用内存 collector：
 
-| 运行 | 基线 ops | eTrace ops | agent CPU |
+| 配置 | 基线 ops | eTrace ops | agent CPU |
 |---|---:|---:|---:|
-| 3 次基线 / 3 次采集的均值 | 335,998,103 | 288,703,204 | 单核 0.43–0.52% |
+| 全量，`sample_percent=100` | 335,998,103 | 288,703,204 | 单核 0.43–0.52% |
+| 常驻，`sample_percent=10` | 329,601,589 | 321,907,378 | 单核 0.40–0.42% |
 
-这是该阻塞型负载下 **14.1% 的平均吞吐回退**。agent cgroup CPU 不包含 BPF 执行时间，因此吞吐差值是应公布的开销；`kernel.bpf_stats_enabled` 可单独观察内核侧执行时间。方法、原始数据和可复现脚本见 [benchmark/overhead](benchmark/overhead/README.md)。该微基准隔离等待捕获成本，数据库和训练负载的结果会不同。
+全量模式的平均吞吐回退是 **14.1%**；对未带 trace 的栈按 10% 采样后降到 **2.3%**。常驻模式保留完整的时间和计数聚合，但栈归属和未带 trace 的事件是采样的；带 trace 的事件始终保留。agent cgroup CPU 不包含 BPF 执行时间，因此吞吐差值是应公布的开销；`kernel.bpf_stats_enabled` 可单独观察内核侧执行时间。方法、原始数据和可复现脚本见 [benchmark/overhead](benchmark/overhead/README.md)。该微基准隔离等待捕获成本，数据库和训练负载的结果会不同。
 
 ## 架构
 

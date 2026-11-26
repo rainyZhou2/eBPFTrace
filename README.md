@@ -171,7 +171,7 @@ The `sched_switch` and `sched_waking` hooks capture kernel and user stacks synch
 
 The off-CPU source can run an `agent/policy` controller when `policy.enabled` is true. Each interval it samples BPF drop counters, BPF `run_time_ns`/`run_cnt`, raw wait rate, accepted event rate, ring-buffer drops, user queue saturation, agent CPU time, process count, and active unwind mode. Under CPU, BPF-runtime, drop, raw-rate, ring-buffer, queue, or process pressure it lowers `max_events_per_interval`, stack depth, and the untraced-event sample rate; after `cooldown` with headroom it raises them again. Accepted rate and policy-caused sampling drops are excluded from the pressure signal so sampling cannot feed back into more sampling. On a DWARF-loaded source it can also switch to frame pointers; a frame-pointer-only source cannot switch back to DWARF. Trace-context events are never sampled.
 
-Sampling is decided when the wait starts and carried in the wait record, so the same wait is either sampled or skipped as a unit; it is not an independent decision at the end event. Untraced waits skip user-stack unwinding and event emission before the ring buffer; the kernel stack is still captured so aggregate counts stay complete. A controller change is committed only when the source reports the actual applied state; failed updates are retried on the next interval. The controller changes only source limits through a narrow adapter; BPF capture, processors, and exporters keep their own contracts. `configs/agent.yaml` enables it with conservative thresholds; leave `policy.enabled: false` to use static limits.
+Sampling is decided when the wait starts and carried in the wait record, so the same wait is either sampled or skipped as a unit; it is not an independent decision at the end event. Outside the sample, untraced waits skip kernel and user stack capture and event emission before the ring buffer; their time and count still enter the aggregate. Trace-context waits are always captured in full. The base rate is `offcpu.sample_percent` (100 for full fidelity, 10 for always-on); the controller can lower it further under pressure. A controller change is committed only when the source reports the actual applied state; failed updates are retried on the next interval. The controller changes only source limits through a narrow adapter; BPF capture, processors, and exporters keep their own contracts. `configs/agent.yaml` enables it with conservative thresholds and `sample_percent: 10` for always-on; use `100` when full stack detail matters, or leave `policy.enabled: false` to keep static limits.
 
 BPF runtime statistics require `kernel.bpf_stats_enabled=1`; without it the run-time signals are zero and the controller falls back to the other inputs. Enable it only for diagnosis because the kernel then accounts every program execution:
 
@@ -184,11 +184,12 @@ sudo bpftool prog show
 
 An off-CPU overhead run on Docker Desktop Linux 7.0.14 (arm64, 10 vCPU, 8 GiB) used a real 8-thread pthread mutex/futex workload for 10 s, with `min_block=1us`, no events, and a memory collector:
 
-| Run | Baseline ops | eTrace ops | Agent CPU |
+| Profile | Baseline ops | eTrace ops | Agent CPU |
 |---|---:|---:|---:|
-| mean of 3 / 3 runs | 335,998,103 | 288,703,204 | 0.43–0.52% of one core |
+| full fidelity, `sample_percent=100` | 335,998,103 | 288,703,204 | 0.43–0.52% of one core |
+| always-on, `sample_percent=10` | 329,601,589 | 321,907,378 | 0.40–0.42% of one core |
 
-That is a **14.1% mean throughput regression** for this blocking-heavy workload. The agent cgroup CPU does not include BPF execution, so the throughput delta is the overhead number to use; `kernel.bpf_stats_enabled` exposes the kernel side separately. Method, raw runs, and the reproducible harness are in [benchmark/overhead](benchmark/overhead/README.md). This microbenchmark isolates wait capture; database and training workloads will differ.
+Full fidelity regresses throughput by **14.1%**; sampling 10% of untraced stacks brings that to **2.3%**. In always-on mode, aggregate time and counts stay complete but stack attribution and untraced events are sampled; traced events are kept. The agent cgroup CPU does not include BPF execution, so the throughput delta is the overhead number to use; `kernel.bpf_stats_enabled` exposes the kernel side separately. Method, raw runs, and the reproducible harness are in [benchmark/overhead](benchmark/overhead/README.md). This microbenchmark isolates wait capture; database and training workloads will differ.
 
 ## Architecture
 

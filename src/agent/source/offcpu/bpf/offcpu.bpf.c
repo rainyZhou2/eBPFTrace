@@ -998,9 +998,11 @@ static __always_inline void on_block(void *ctx, struct task_struct *prev, __u64 
 	rec.sampled = rec.has_trace || sample_now(pid, now);
 	if (!rec.sampled)
 		record_sample_drop();
-	rec.kstack = capture_stack(ctx, 0);
-	if (capture_user_stacks && rec.sampled)
-		rec.ustack = capture_user_stack(ctx);
+	if (rec.sampled) {
+		rec.kstack = capture_stack(ctx, 0);
+		if (capture_user_stacks)
+			rec.ustack = capture_user_stack(ctx);
+	}
 	if (bpf_map_update_elem(&starts, &pid, &rec, BPF_ANY))
 		record_drop(DROP_START);
 }

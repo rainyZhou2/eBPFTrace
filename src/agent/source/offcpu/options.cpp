@@ -23,10 +23,10 @@ void decode_fields(config::Fields& f, GPUOptions& o) {
 
 void decode_fields(config::Fields& f, Options& o) {
 	f("target_pid", o.target_pid)("min_block", o.min_block)("max_block", o.max_block)(
-	        "include_preempted", o.include_preempted)("user_stacks", o.user_stacks)("chain_depth", o.chain_depth)(
-	        "slow_event", o.slow_event)("max_events_per_interval", o.max_events_per_interval)(
-	        "drain_grace", o.drain_grace)("trace_context", o.trace_context)("unwind", o.unwind)("gpu", o.gpu)(
-	        "policy", o.policy);
+	        "include_preempted", o.include_preempted)("user_stacks", o.user_stacks)(
+	        "sample_percent", o.sample_percent)("chain_depth", o.chain_depth)("slow_event", o.slow_event)(
+	        "max_events_per_interval", o.max_events_per_interval)("drain_grace", o.drain_grace)(
+	        "trace_context", o.trace_context)("unwind", o.unwind)("gpu", o.gpu)("policy", o.policy);
 }
 
 void Options::validate() const {
@@ -44,6 +44,9 @@ void Options::validate() const {
 	}
 	if (max_events_per_interval <= 0) {
 		throw Error("max_events_per_interval must be positive");
+	}
+	if (sample_percent < 0 || sample_percent > 100) {
+		throw Error("sample_percent must be between 0 and 100");
 	}
 	if (unwind.mode != kUnwindAuto && unwind.mode != kUnwindDwarf && unwind.mode != kUnwindFramePointer) {
 		throw Error(std::format("unwind.mode must be {}, {} or {}", kUnwindAuto, kUnwindDwarf,

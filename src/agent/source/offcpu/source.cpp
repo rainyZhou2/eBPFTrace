@@ -75,6 +75,7 @@ Source::Source(Options o, Deps deps)
       unwind_depth_gauge_(
               deps.registry.gauge("etrace_offcpu_unwind_depth", "Maximum user and kernel stack frames emitted.")) {
 	max_events_.store(static_cast<uint32_t>(opts_.max_events_per_interval));
+	sample_percent_.store(static_cast<uint32_t>(opts_.sample_percent));
 	event_limit_.Set(static_cast<double>(max_events_.load()));
 	event_sample_.Set(static_cast<double>(sample_percent_.load()));
 	unwind_depth_gauge_.Set(static_cast<double>(unwind_depth_.load()));

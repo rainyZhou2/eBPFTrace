@@ -57,6 +57,7 @@ struct Options {
 	Duration max_block{0};
 	bool include_preempted = false;
 	bool user_stacks = true;
+	int sample_percent = 100;
 	int chain_depth = kMaxHops;
 	Duration slow_event{0};
 	int max_events_per_interval = 20000;

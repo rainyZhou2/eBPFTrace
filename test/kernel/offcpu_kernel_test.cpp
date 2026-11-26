@@ -553,6 +553,19 @@ TEST(Kernel, BlockedListsGpuWaitsInProgress) {
 	EXPECT_EQ(c.wait().first, 0);
 }
 
+TEST(Kernel, ZeroStackSamplingKeepsCollecting) {
+	REQUIRE_BPF();
+	Options o;
+	o.target_pid = getpid();
+	o.trace_context.enabled = false;
+	o.chain_depth = 0;
+	o.sample_percent = 0;
+	Harness h(o);
+	EXPECT_NO_THROW(h.collect());
+	std::this_thread::sleep_for(100ms);
+	EXPECT_NO_THROW(h.collect());
+}
+
 TEST(Kernel, AdaptivePolicyRunsWhileCollecting) {
 	REQUIRE_BPF();
 	Options o;

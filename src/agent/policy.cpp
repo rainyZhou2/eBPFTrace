@@ -81,7 +81,7 @@ Decision Planner::decide(const Signals& previous, const Signals& current, Durati
                          const Decision& decision) const {
 	double seconds = std::max(std::chrono::duration<double>(elapsed).count(), 1e-6);
 	double cpu = cpu_ratio(previous, current, seconds);
-	double raw_rate = rate(previous.raw_events, current.raw_events, seconds);
+	double raw_rate = rate(previous.raw_waits, current.raw_waits, seconds);
 	double drops = rate(previous.bpf_drops, current.bpf_drops, seconds);
 	double bpf = bpf_ratio(previous, current, seconds);
 	double ring = rate(previous.ringbuf_drops, current.ringbuf_drops, seconds);

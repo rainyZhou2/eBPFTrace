@@ -129,7 +129,7 @@ private:
 	std::atomic<uint32_t> unwind_depth_{64};
 	std::atomic<int> active_unwind_mode_{0};
 	bool dwarf_loaded_ = false;
-	std::atomic<uint64_t> policy_events_{0};
+	std::atomic<uint64_t> policy_accepted_events_{0};
 	std::atomic<uint64_t> policy_capacity_drops_{0};
 	std::atomic<uint64_t> policy_decode_drops_{0};
 	std::unique_ptr<policy::Controller> policy_;

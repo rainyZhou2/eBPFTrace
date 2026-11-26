@@ -146,6 +146,7 @@ CUDA 驱动默认调度下，等待 GPU 的线程会在 CPU 上自旋，不进�
 - 通过 runtime 启动的 kernel 用 host stub 符号化，stub 携带 kernel 的（mangled）名字；通过 driver 启动的 kernel 用返回 handle 的 module lookup 命名，因此在 agent 附加之前拿到的 handle 会显示为 ``[gpu kernel]`[unknown]``。graph 启动显示为 `CUDA graph`。
 - launch 探针会在每次启动时触发。如果扫描周期内全机 launch 速率超过 `gpu.max_launch_rate`（默认 20000/s），探针会被永久摘除；等待仍会计时，但不再带 kernel 名。状态通过 `etrace_offcpu_gpu_launch_tracking` 导出。
 - 等待用合成的内层栈帧命名：`[gpu]` 加 CUDA 调用，然后是 ``[gpu kernel]`<name>``；如果进程在上一次 GPU 等待之后、本次等待之前发起了 NCCL 集合通信，还会加上 ``[gpu]`waiting on ncclAllReduce``，表示线程在等网络和其他 rank。
+- 当前主机没有 NVIDIA 驱动（`nvidia-smi` 不存在），因此没有在真实 GPU 上测量 NCCL 归因准确率；这里不发布合成或伪造的数字。验证协议和所需环境见 [benchmark/nccl](benchmark/nccl/README.md)，请在双 GPU 主机上运行后再公布准确率。
 - 这些等待的 reason 是 `gpu`，会出现在与 off-CPU 相同的火焰图、causes、events 和 span 视图中。事件还携带 `gpu_stream` 和 `gpu_launches`，即该 stream 自上一次等待以来排队的 kernel。
 
 ### Trace 关联
@@ -178,6 +179,16 @@ BPF 运行统计需要 `kernel.bpf_stats_enabled=1`；未开启时运行时间�
 sudo sysctl -w kernel.bpf_stats_enabled=1
 sudo bpftool prog show
 ```
+
+### 实测开销
+
+在 Docker Desktop Linux 7.0.14（arm64、10 vCPU、8 GiB）上，用真实的 8 线程 pthread mutex/futex 负载运行 10 秒，`min_block=1us`、不产生事件、使用内存 collector：
+
+| 运行 | 基线 ops | eTrace ops | agent CPU |
+|---|---:|---:|---:|
+| 3 次基线 / 3 次采集的均值 | 335,998,103 | 288,703,204 | 单核 0.43–0.52% |
+
+这是该阻塞型负载下 **14.1% 的平均吞吐回退**。agent cgroup CPU 不包含 BPF 执行时间，因此吞吐差值是应公布的开销；`kernel.bpf_stats_enabled` 可单独观察内核侧执行时间。方法、原始数据和可复现脚本见 [benchmark/overhead](benchmark/overhead/README.md)。该微基准隔离等待捕获成本，数据库和训练负载的结果会不同。
 
 ## 架构
 

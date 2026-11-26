@@ -80,9 +80,9 @@ TEST(Policy, IgnoresAcceptedRateAndActiveSamplingDrops) {
 	agent::policy::Planner planner(config());
 	agent::policy::Signals previous;
 	agent::policy::Signals current;
-	current.events = 100'000;
-	current.sampled_drops = 100'000;
-	current.events_dropped = 100'000;
+	current.accepted_events = 100'000;
+	current.sampled_waits = 100'000;
+	current.rejected_events = 100'000;
 	auto steady = agent::policy::Decision{20000, 64, 100, "dwarf"};
 	auto next = planner.decide(previous, current, 1s, steady);
 	EXPECT_EQ(next.max_events_per_interval, steady.max_events_per_interval);
@@ -95,8 +95,8 @@ TEST(Policy, RaisesLimitsWhenThereIsHeadroom) {
 	agent::policy::Planner planner(config());
 	agent::policy::Signals previous;
 	agent::policy::Signals current;
-	current.events = 100;
-	previous.events = 0;
+	current.raw_waits = 100;
+	previous.raw_waits = 0;
 	current.dwarf_available = true;
 	auto low = decision();
 	low.max_events_per_interval = 10000;

@@ -40,10 +40,10 @@ void decode_fields(config::Fields& f, Config& o);
 
 struct Signals {
 	double cpu_seconds = 0;
-	uint64_t raw_events = 0;
-	uint64_t events = 0;
-	uint64_t events_dropped = 0;
-	uint64_t sampled_drops = 0;
+	uint64_t raw_waits = 0;
+	uint64_t accepted_events = 0;
+	uint64_t rejected_events = 0;
+	uint64_t sampled_waits = 0;
 	uint64_t capacity_drops = 0;
 	uint64_t decode_drops = 0;
 	uint64_t ringbuf_drops = 0;

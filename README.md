@@ -146,6 +146,7 @@ With the CUDA driver's default scheduling, a thread waiting for the GPU spins on
 - Kernels launched through the runtime are named by symbolizing their host stub, which carries the kernel's (mangled) name. Kernels launched through the driver are named from the module lookup that returned their handle, so handles obtained before the agent attached show as ``[gpu kernel]`[unknown]``. Graph launches show as `CUDA graph`.
 - Launch probes trap on every launch. When the host-wide launch rate exceeds `gpu.max_launch_rate` (20000/s by default), they are detached for the rest of the run; waits are still timed but name no kernel. The state is exported as `etrace_offcpu_gpu_launch_tracking`.
 - The wait is named by synthetic innermost frames: `[gpu]` and the CUDA call, then ``[gpu kernel]`<name>``, then ``[gpu]`waiting on ncclAllReduce`` when the process issued an NCCL collective after its previous GPU wait and before this one, which means the thread waits for the network and the other ranks.
+- Real-GPU NCCL attribution accuracy is not measured in the current host: it has no NVIDIA driver (`nvidia-smi` is absent). No synthetic number is published. The validation protocol and required environment are in [benchmark/nccl](benchmark/nccl/README.md); run it on a two-GPU host before claiming accuracy.
 - These waits have reason `gpu` and appear in the same flame graphs, causes, events, and span views as off-CPU time. Events also carry `gpu_stream` and `gpu_launches`, the kernels queued on that stream since its previous wait.
 
 ### Trace correlation
@@ -178,6 +179,16 @@ BPF runtime statistics require `kernel.bpf_stats_enabled=1`; without it the run-
 sudo sysctl -w kernel.bpf_stats_enabled=1
 sudo bpftool prog show
 ```
+
+### Measured overhead
+
+An off-CPU overhead run on Docker Desktop Linux 7.0.14 (arm64, 10 vCPU, 8 GiB) used a real 8-thread pthread mutex/futex workload for 10 s, with `min_block=1us`, no events, and a memory collector:
+
+| Run | Baseline ops | eTrace ops | Agent CPU |
+|---|---:|---:|---:|
+| mean of 3 / 3 runs | 335,998,103 | 288,703,204 | 0.43–0.52% of one core |
+
+That is a **14.1% mean throughput regression** for this blocking-heavy workload. The agent cgroup CPU does not include BPF execution, so the throughput delta is the overhead number to use; `kernel.bpf_stats_enabled` exposes the kernel side separately. Method, raw runs, and the reproducible harness are in [benchmark/overhead](benchmark/overhead/README.md). This microbenchmark isolates wait capture; database and training workloads will differ.
 
 ## Architecture
 

@@ -1,0 +1,36 @@
+node: overhead
+proc_root: /proc
+interval: 5s
+log: {level: warn, format: text}
+admin: {listen: ":9431"}
+spool: {dir: /tmp/etrace-spool, max_bytes: 134217728}
+sources:
+  - driver: offcpu
+    options:
+      target_pid: ${TARGET_PID:?}
+      min_block: 1us
+      chain_depth: 0
+      user_stacks: true
+      slow_event: 0
+      trace_context:
+        enabled: false
+      unwind:
+        mode: auto
+        max_rows: 1048576
+        max_processes: 4096
+        refresh_interval: 1s
+      gpu:
+        enabled: false
+      policy:
+        enabled: false
+processors:
+  - driver: container
+  - driver: symbolize
+exporter:
+  driver: grpc
+  options:
+    target: etrace-overhead-collector:4317
+    timeout: 10s
+    tls:
+      enabled: false
+      allow_insecure: true

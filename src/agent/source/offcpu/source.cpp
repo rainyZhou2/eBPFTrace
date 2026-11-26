@@ -323,7 +323,7 @@ void Source::read_events(std::stop_token st) {
 		batch_.clear();
 		if (accepted) {
 			events_.Increment(static_cast<double>(accepted));
-			policy_events_.fetch_add(accepted);
+			policy_accepted_events_.fetch_add(accepted);
 		}
 		if (dropped) {
 			events_dropped_.Increment(static_cast<double>(dropped));
@@ -627,10 +627,10 @@ uint32_t Source::process_count() const {
 policy::Signals Source::policy_signals() {
 	policy::Signals signals;
 	signals.cpu_seconds = policy::process_cpu_seconds();
-	signals.events = policy_events_.load();
+	signals.accepted_events = policy_accepted_events_.load();
 	signals.capacity_drops = policy_capacity_drops_.load();
 	signals.decode_drops = policy_decode_drops_.load();
-	signals.events_dropped = signals.capacity_drops + signals.decode_drops;
+	signals.rejected_events = signals.capacity_drops + signals.decode_drops;
 	signals.bpf_drops = bpf_drop_count();
 	signals.processes = process_count();
 	auto mode = active_unwind_mode_.load();
@@ -644,9 +644,9 @@ policy::Signals Source::policy_signals() {
 		};
 		int traffic = obj_->map_fd("traffic");
 		int sampled = obj_->map_fd("sample_drops");
-		signals.raw_events = counter(traffic, 0);
+		signals.raw_waits = counter(traffic, 0);
 		signals.ringbuf_drops = counter(traffic, 2);
-		signals.sampled_drops = counter(sampled, 0);
+		signals.sampled_waits = counter(sampled, 0);
 		auto runtime = obj_->runtime_stats();
 		signals.bpf_run_time_ns = runtime.run_time_ns;
 		signals.bpf_run_cnt = runtime.run_cnt;

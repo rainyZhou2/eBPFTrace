@@ -16,7 +16,7 @@ CONFIGURE = cmake -S /src -B /build -G Ninja \
 	-DVCPKG_INSTALLED_DIR=/opt/vcpkg_installed -DVCPKG_MANIFEST_INSTALL=OFF \
 	-DETRACE_VERSION=$(VERSION) $(CMAKE_FLAGS)
 
-.PHONY: all builder build test test-clickhouse test-kernel kernel-bin scenarios e2e e2e-scenario image image-push fmt fmt-check bpf-ide-headers ide clean
+.PHONY: all builder build test test-clickhouse test-kernel kernel-bin scenarios e2e e2e-scenario overhead image image-push fmt fmt-check bpf-ide-headers ide clean
 
 all: build
 
@@ -89,6 +89,9 @@ e2e-scenario:
 
 e2e: build scenarios e2e-scenario
 	HOST_ARCH=$(HOST_ARCH) test/e2e/stack/run.sh
+
+overhead: build
+	HOST_ARCH=$(HOST_ARCH) BIN=$(CURDIR)/bin/etrace-linux-$(HOST_ARCH) benchmark/overhead/run.sh
 
 image:
 	docker buildx build --platform linux/$(HOST_ARCH) --load --build-arg VERSION=$(VERSION) -f build/Dockerfile -t $(IMAGE):$(VERSION) .

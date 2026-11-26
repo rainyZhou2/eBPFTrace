@@ -34,6 +34,17 @@ const char* to_string(OffCPUReason r) {
 	}
 }
 
+const char* to_string(Evidence e) {
+	switch (e) {
+		case Evidence::observed:
+			return "observed";
+		case Evidence::inferred:
+			return "inferred";
+		default:
+			return "unknown";
+	}
+}
+
 std::string TraceContext::trace_id_hex() const {
 	return valid() ? hex_encode(trace_id) : "";
 }

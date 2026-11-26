@@ -108,6 +108,17 @@ T number_at(const ch::ColumnRef& col, size_t row) {
 	return c->At(row);
 }
 
+model::Evidence evidence(uint8_t value) {
+	switch (value) {
+		case static_cast<uint8_t>(model::Evidence::observed):
+			return model::Evidence::observed;
+		case static_cast<uint8_t>(model::Evidence::inferred):
+			return model::Evidence::inferred;
+		default:
+			return model::Evidence::unknown;
+	}
+}
+
 // ChainColumns holds the parallel arrays a causal chain is stored in.
 struct ChainColumns {
 	std::shared_ptr<ch::ColumnArrayT<LcString>> comm = std::make_shared<ch::ColumnArrayT<LcString>>();
@@ -123,12 +134,17 @@ struct ChainColumns {
 	        std::make_shared<ch::ColumnArrayT<ch::ColumnString>>();
 	std::shared_ptr<ch::ColumnArrayT<ch::ColumnString>> span =
 	        std::make_shared<ch::ColumnArrayT<ch::ColumnString>>();
+	std::shared_ptr<ch::ColumnArrayT<ch::ColumnUInt8>> wake_evidence =
+	        std::make_shared<ch::ColumnArrayT<ch::ColumnUInt8>>();
+	std::shared_ptr<ch::ColumnArrayT<ch::ColumnUInt8>> wait_evidence =
+	        std::make_shared<ch::ColumnArrayT<ch::ColumnUInt8>>();
 
 	void append(const std::vector<model::Hop>& c) {
 		std::vector<std::string> comms, traces, spans;
 		std::vector<uint32_t> pids;
 		std::vector<std::vector<std::string>> wakes, waits;
 		std::vector<uint64_t> ns;
+		std::vector<uint8_t> wake_ev, wait_ev;
 		for (const auto& h : c) {
 			comms.push_back(h.task.comm);
 			pids.push_back(h.task.pid);
@@ -137,6 +153,8 @@ struct ChainColumns {
 			ns.push_back(h.wait_ns);
 			traces.push_back(h.trace.trace_id_hex());
 			spans.push_back(h.trace.span_id_hex());
+			wake_ev.push_back(static_cast<uint8_t>(h.wake_evidence));
+			wait_ev.push_back(static_cast<uint8_t>(h.wait_evidence));
 		}
 		comm->Append(comms);
 		pid->Append(pids);
@@ -145,6 +163,8 @@ struct ChainColumns {
 		wait_ns->Append(ns);
 		trace->Append(traces);
 		span->Append(spans);
+		wake_evidence->Append(wake_ev);
+		wait_evidence->Append(wait_ev);
 	}
 
 	void add_to(ch::Block& b) const {
@@ -155,6 +175,8 @@ struct ChainColumns {
 		b.AppendColumn("chain_wait_ns", wait_ns);
 		b.AppendColumn("chain_trace_id", trace);
 		b.AppendColumn("chain_span_id", span);
+		b.AppendColumn("chain_wake_evidence", wake_evidence);
+		b.AppendColumn("chain_wait_evidence", wait_evidence);
 	}
 };
 
@@ -242,11 +264,12 @@ int limit_of(int n) {
 constexpr const char* kSampleColumns =
         "batch_id, window_start, window_end, node, agent_id, labels, pid, tid, comm, container_id, reason, stack, "
         "chain_comm, chain_pid, chain_wake_stack, chain_wait_stack, chain_wait_ns, chain_trace_id, chain_span_id, "
-        "blocked_ns, count, pod_uid, pod, namespace, container";
+        "chain_wake_evidence, chain_wait_evidence, blocked_ns, count, pod_uid, pod, namespace, container";
 constexpr const char* kEventColumns =
         "batch_id, node, agent_id, labels, trace_id, span_id, start_time, end_time, duration_ns, pid, tid, comm, "
         "container_id, reason, stack, chain_comm, chain_pid, chain_wake_stack, chain_wait_stack, chain_wait_ns, "
-        "chain_trace_id, chain_span_id, pod_uid, pod, namespace, container, gpu_stream, gpu_launches";
+        "chain_trace_id, chain_span_id, chain_wake_evidence, chain_wait_evidence, pod_uid, pod, namespace, "
+        "container, gpu_stream, gpu_launches";
 
 }  // namespace
 
@@ -528,7 +551,9 @@ std::vector<ChainValue> Store::offcpu_chains(const ChainQuery& q) {
 	arraySlice(chain_wake_stack, 1, {0}) AS cwk,
 	arraySlice(chain_wait_stack, 1, {0}) AS cwt,
 	sumForEach(arraySlice(chain_wait_ns, 1, {0})) AS cwn,
-	sum(blocked_ns), sum(count)
+	sum(blocked_ns), sum(count),
+	any(arraySlice(chain_wake_evidence, 1, {0})) AS cwe,
+	any(arraySlice(chain_wait_evidence, 1, {0})) AS cwte
 FROM {1} {2}
 GROUP BY c, stack, cc, cwk, cwt,
 	arrayMap(i -> chain_wait_ns[i] > 0 OR notEmpty(cwt[i]), arrayEnumerate(cc))
@@ -550,12 +575,16 @@ LIMIT {3})",
 			auto ns = numbers_at<uint64_t>(b[5], r);
 			v.total_ns = number_at<uint64_t>(b[6], r);
 			v.count = number_at<uint64_t>(b[7], r);
+			auto wake_evidence = numbers_at<uint8_t>(b[8], r);
+			auto wait_evidence = numbers_at<uint8_t>(b[9], r);
 			for (size_t i = 0; i < comms.size(); i++) {
 				Hop h;
 				h.comm = comms[i];
 				h.wake_stack = i < wake.size() ? wake[i] : std::vector<std::string>{};
 				h.wait_stack = i < wait.size() ? wait[i] : std::vector<std::string>{};
 				h.wait_ns = i < ns.size() ? ns[i] : 0;
+				h.wake_evidence = evidence(i < wake_evidence.size() ? wake_evidence[i] : 0);
+				h.wait_evidence = evidence(i < wait_evidence.size() ? wait_evidence[i] : 0);
 				v.chain.push_back(std::move(h));
 			}
 			out.push_back(std::move(v));
@@ -594,7 +623,7 @@ void Store::visit_events(const EventQuery& q, const EventVisitor& visit) {
 	        R"(SELECT toString(node), pid, tid, toString(comm), container_id, toString(pod), toString(namespace),
 	toString(container), stack, CAST(chain_comm AS Array(String)), chain_pid, chain_wake_stack, chain_wait_stack,
 	chain_wait_ns, chain_trace_id, chain_span_id, toUnixTimestamp64Nano(start_time), toUnixTimestamp64Nano(end_time),
-	toString(reason), trace_id, span_id, gpu_stream, gpu_launches
+	toString(reason), trace_id, span_id, gpu_stream, gpu_launches, chain_wake_evidence, chain_wait_evidence
 FROM {} {} ORDER BY start_time)",
 	        events_, w.sql());
 	if (q.limit > 0) {
@@ -622,12 +651,19 @@ FROM {} {} ORDER BY start_time)",
 			auto ns = numbers_at<uint64_t>(b[13], r);
 			auto traces = strings_at(b[14], r);
 			auto spans = strings_at(b[15], r);
+			auto wake_evidence = numbers_at<uint8_t>(b[23], r);
+			auto wait_evidence = numbers_at<uint8_t>(b[24], r);
 			for (size_t i = 0; i < comms.size(); i++) {
-				e.chain.push_back(Hop{comms[i], i < pids.size() ? pids[i] : 0,
-				                      i < wake.size() ? wake[i] : std::vector<std::string>{},
-				                      i < wait.size() ? wait[i] : std::vector<std::string>{},
-				                      i < ns.size() ? ns[i] : 0, i < traces.size() ? traces[i] : "",
-				                      i < spans.size() ? spans[i] : ""});
+				Hop h{comms[i],
+				      i < pids.size() ? pids[i] : 0,
+				      i < wake.size() ? wake[i] : std::vector<std::string>{},
+				      i < wait.size() ? wait[i] : std::vector<std::string>{},
+				      i < ns.size() ? ns[i] : 0,
+				      i < traces.size() ? traces[i] : "",
+				      i < spans.size() ? spans[i] : ""};
+				h.wake_evidence = evidence(i < wake_evidence.size() ? wake_evidence[i] : 0);
+				h.wait_evidence = evidence(i < wait_evidence.size() ? wait_evidence[i] : 0);
+				e.chain.push_back(std::move(h));
 			}
 			e.start = from_unix_nano(number_at<int64_t>(b[16], r));
 			e.end = from_unix_nano(number_at<int64_t>(b[17], r));

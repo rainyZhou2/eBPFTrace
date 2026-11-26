@@ -51,6 +51,8 @@ struct Hop {
 	uint64_t wait_ns = 0;
 	std::string trace_id;
 	std::string span_id;
+	model::Evidence wake_evidence = model::Evidence::unknown;
+	model::Evidence wait_evidence = model::Evidence::unknown;
 };
 
 // ChainValue aggregates off-CPU time by blocked task, its stack, and the

@@ -32,6 +32,9 @@ struct CausePath {
 	uint64_t count = 0;
 	std::vector<uint64_t> hops_wait;
 	CauseEvidence evidence = CauseEvidence::blocked_site;
+	uint32_t observed_hops = 0;
+	uint32_t inferred_hops = 0;
+	uint32_t inferred_waits = 0;
 };
 
 Json to_json(const CausePath& c);

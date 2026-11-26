@@ -15,7 +15,9 @@ constexpr const char* kChainColumns = R"(	chain_comm Array(LowCardinality(String
 	chain_wait_stack Array(Array(String)),
 	chain_wait_ns Array(UInt64),
 	chain_trace_id Array(String),
-	chain_span_id Array(String),)";
+	chain_span_id Array(String),
+	chain_wake_evidence Array(UInt8),
+	chain_wait_evidence Array(UInt8),)";
 
 struct TableDef {
 	std::string name;
@@ -73,7 +75,9 @@ constexpr const char* kAddColumns =
         "ADD COLUMN IF NOT EXISTS pod_uid String DEFAULT '', "
         "ADD COLUMN IF NOT EXISTS pod LowCardinality(String) DEFAULT '', "
         "ADD COLUMN IF NOT EXISTS namespace LowCardinality(String) DEFAULT '', "
-        "ADD COLUMN IF NOT EXISTS container LowCardinality(String) DEFAULT ''";
+        "ADD COLUMN IF NOT EXISTS container LowCardinality(String) DEFAULT '', "
+        "ADD COLUMN IF NOT EXISTS chain_wake_evidence Array(UInt8) DEFAULT [], "
+        "ADD COLUMN IF NOT EXISTS chain_wait_evidence Array(UInt8) DEFAULT []";
 constexpr const char* kAddEventColumns =
         ", ADD COLUMN IF NOT EXISTS gpu_stream UInt64 DEFAULT 0, "
         "ADD COLUMN IF NOT EXISTS gpu_launches UInt32 DEFAULT 0";

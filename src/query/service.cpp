@@ -101,6 +101,20 @@ public:
 		auto& c = paths_[it->second];
 		c.total_ns += total_ns;
 		c.count += count;
+		for (size_t i = 0; i < chain.size(); i++) {
+			auto evidence = chain[i].wake_evidence;
+			if (evidence == model::Evidence::unknown) {
+				evidence = i == 0 ? model::Evidence::observed : model::Evidence::inferred;
+			}
+			if (evidence == model::Evidence::observed) {
+				c.observed_hops++;
+			} else {
+				c.inferred_hops++;
+			}
+			if (has_overlapping_wait(chain[i])) {
+				c.inferred_waits++;
+			}
+		}
 		for (size_t i = 0; i < waits.size() && i < c.hops_wait.size(); i++) {
 			c.hops_wait[i] += waits[i];
 		}
@@ -260,6 +274,11 @@ Json to_json(const CausePath& c) {
 	j["total_ns"] = c.total_ns;
 	j["count"] = c.count;
 	j["hop_wait_ns"] = c.hops_wait;
+	j["observed_hops"] = c.observed_hops;
+	j["inferred_hops"] = c.inferred_hops;
+	j["inferred_waits"] = c.inferred_waits;
+	auto evidence_total = static_cast<uint64_t>(c.observed_hops) + c.inferred_hops + c.inferred_waits;
+	j["confidence"] = evidence_total == 0 ? 100 : (100 * c.observed_hops / evidence_total);
 	return j;
 }
 

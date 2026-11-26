@@ -352,6 +352,9 @@ TEST(ClickHouse, MigrateExistingTablesAndQueryPods) {
 	        now,
 	        model::OffCPUReason::blocked,
 	        tc}};
+	b.offcpu[0].chain[0].wake_evidence = model::Evidence::observed;
+	b.offcpu[0].chain[0].wait_evidence = model::Evidence::inferred;
+	b.events[0].chain[0].wake_evidence = model::Evidence::observed;
 	s.write_batch(b);
 	s.write_batch(b);
 	storage::Filter hit;
@@ -371,6 +374,8 @@ TEST(ClickHouse, MigrateExistingTablesAndQueryPods) {
 	ASSERT_EQ(chains[0].chain.size(), 1u);
 	EXPECT_EQ(chains[0].chain[0].wait_stack, std::vector<std::string>{"read"});
 	EXPECT_EQ(chains[0].chain[0].wait_ns, 4u);
+	EXPECT_EQ(chains[0].chain[0].wake_evidence, model::Evidence::observed);
+	EXPECT_EQ(chains[0].chain[0].wait_evidence, model::Evidence::inferred);
 	storage::EventQuery eq;
 	eq.filter = hit;
 	eq.trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
@@ -378,6 +383,7 @@ TEST(ClickHouse, MigrateExistingTablesAndQueryPods) {
 	ASSERT_EQ(events.size(), 1u);
 	EXPECT_EQ(events[0].pod, "api-0");
 	EXPECT_EQ(events[0].container, "app");
+	EXPECT_EQ(events[0].chain[0].wake_evidence, model::Evidence::observed);
 	EXPECT_EQ(events[0].start, b.events[0].start);
 	ASSERT_EQ(events[0].chain.size(), 1u);
 	EXPECT_EQ(events[0].chain[0].span_id, "00f067aa0ba902b7");

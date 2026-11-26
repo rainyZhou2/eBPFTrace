@@ -13,7 +13,8 @@ std::vector<Hop> hops(const std::vector<model::Hop>& c) {
 	out.reserve(c.size());
 	for (const auto& h : c) {
 		out.push_back(Hop{h.task.comm, h.task.pid, model::symbols(h.wake_stack), model::symbols(h.wait_stack),
-		                  h.wait_ns, h.trace.trace_id_hex(), h.trace.span_id_hex()});
+		                  h.wait_ns, h.trace.trace_id_hex(), h.trace.span_id_hex(), h.wake_evidence,
+		                  h.wait_evidence});
 	}
 	return out;
 }

@@ -39,6 +39,17 @@ TEST(WakeReport, KeepsUpstreamEvidenceWhenTheWaitStackIsMissing) {
 	auto j = query::to_json(causes.front());
 	EXPECT_EQ(j.at("path"), (query::Json{"load_cache", "cache_holder", "decoy"}));
 	EXPECT_EQ(j.at("cause_evidence"), "inferred_upstream");
+	EXPECT_EQ(j.at("observed_hops"), 1);
+	EXPECT_EQ(j.at("inferred_hops"), 1);
+	EXPECT_EQ(j.at("inferred_waits"), 1);
+	EXPECT_EQ(j.at("confidence"), 33);
+}
+
+TEST(WakeReport, UsesStoredEvidenceWhenAvailable) {
+	auto event = overlapping_wait();
+	event.chain.front().wake_evidence = model::Evidence::inferred;
+	const auto hop = query::to_json(event).at("chain").at(0);
+	EXPECT_EQ(hop.at("wake_evidence"), "inferred");
 }
 
 TEST(WakeReport, SeparatesObservedWakeSitesFromOverlappingWaitSites) {

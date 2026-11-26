@@ -73,9 +73,11 @@ std::vector<model::Hop> to_chain(const RawChain& c, const StackLookup& lookup) {
 		model::Hop hop;
 		hop.task = model::Task{h.tgid, h.pid, cstr(h.comm, kCommLen), "", {}};
 		hop.wake_stack = join_stacks(lookup, h.wake_kstack, h.wake_ustack);
+		hop.wake_evidence = i == 0 ? model::Evidence::observed : model::Evidence::inferred;
 		if (h.has_wait) {
 			hop.wait_stack = join_stacks(lookup, h.wait_kstack, h.wait_ustack);
 			hop.wait_ns = h.wait_ns;
+			hop.wait_evidence = model::Evidence::inferred;
 		}
 		if (h.has_trace) {
 			hop.trace = trace_of(h.trace);

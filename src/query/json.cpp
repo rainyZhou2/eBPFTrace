@@ -23,7 +23,12 @@ Json to_json(const storage::Hop& h) {
 	if (h.wait_ns != 0) {
 		j["wait_ns"] = h.wait_ns;
 	}
-	if (has_overlapping_wait(h)) {
+	if (h.wake_evidence != model::Evidence::unknown) {
+		j["wake_evidence"] = model::to_string(h.wake_evidence);
+	}
+	if (h.wait_evidence != model::Evidence::unknown) {
+		j["wait_evidence"] = model::to_string(h.wait_evidence);
+	} else if (has_overlapping_wait(h)) {
 		j["wait_evidence"] = "inferred";
 	}
 	if (!h.trace_id.empty()) {
@@ -58,7 +63,9 @@ Json to_json(const storage::Event& e) {
 		auto& c = j["chain"] = Json::array();
 		for (const auto& h : e.chain) {
 			auto hop = to_json(h);
-			hop["wake_evidence"] = c.empty() ? "observed" : "inferred";
+			if (!hop.contains("wake_evidence")) {
+				hop["wake_evidence"] = c.empty() ? "observed" : "inferred";
+			}
 			c.push_back(std::move(hop));
 		}
 	}

@@ -64,6 +64,12 @@ enum class OffCPUReason : uint8_t { unknown = 0, blocked = 1, preempted = 2, gpu
 
 const char* to_string(OffCPUReason r);
 
+// Evidence records how a hop entered the chain. observed means the wakeup
+// was seen in sched_waking; inferred means it was linked by time overlap.
+enum class Evidence : uint8_t { unknown = 0, observed = 1, inferred = 2 };
+
+const char* to_string(Evidence e);
+
 struct TraceContext {
 	std::array<uint8_t, 16> trace_id{};
 	std::array<uint8_t, 8> span_id{};
@@ -87,6 +93,8 @@ struct Hop {
 	Stack wait_stack;
 	uint64_t wait_ns = 0;
 	TraceContext trace;
+	Evidence wake_evidence = Evidence::unknown;
+	Evidence wait_evidence = Evidence::unknown;
 
 	bool waited() const { return !wait_stack.empty() || wait_ns > 0; }
 };

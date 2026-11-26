@@ -96,6 +96,28 @@ model::TraceContext trace_from_proto(const pb::TraceContext& t) {
 	return out;
 }
 
+pb::Evidence evidence_to_proto(model::Evidence e) {
+	switch (e) {
+		case model::Evidence::observed:
+			return pb::EVIDENCE_OBSERVED;
+		case model::Evidence::inferred:
+			return pb::EVIDENCE_INFERRED;
+		default:
+			return pb::EVIDENCE_UNSPECIFIED;
+	}
+}
+
+model::Evidence evidence_from_proto(pb::Evidence e) {
+	switch (e) {
+		case pb::EVIDENCE_OBSERVED:
+			return model::Evidence::observed;
+		case pb::EVIDENCE_INFERRED:
+			return model::Evidence::inferred;
+		default:
+			return model::Evidence::unknown;
+	}
+}
+
 template <class Msg>
 void chain_to_proto(const std::vector<model::Hop>& c, Msg* out) {
 	for (const auto& h : c) {
@@ -111,6 +133,8 @@ void chain_to_proto(const std::vector<model::Hop>& c, Msg* out) {
 		if (h.trace.valid()) {
 			trace_to_proto(h.trace, ph->mutable_trace());
 		}
+		ph->set_wake_evidence(evidence_to_proto(h.wake_evidence));
+		ph->set_wait_evidence(evidence_to_proto(h.wait_evidence));
 	}
 }
 
@@ -122,9 +146,11 @@ std::vector<model::Hop> chain_from_proto(const Msg& m, const Limits& limits) {
 	std::vector<model::Hop> out;
 	out.reserve(static_cast<size_t>(m.chain_size()));
 	for (const auto& h : m.chain()) {
-		out.push_back(model::Hop{task_from_proto(h.task(), limits), stack_from_proto(h.wake_stack(), limits),
-		                         stack_from_proto(h.wait_stack(), limits), h.wait_ns(),
-		                         trace_from_proto(h.trace())});
+		model::Hop hop{task_from_proto(h.task(), limits), stack_from_proto(h.wake_stack(), limits),
+		               stack_from_proto(h.wait_stack(), limits), h.wait_ns(), trace_from_proto(h.trace())};
+		hop.wake_evidence = evidence_from_proto(h.wake_evidence());
+		hop.wait_evidence = evidence_from_proto(h.wait_evidence());
+		out.push_back(std::move(hop));
 	}
 	return out;
 }

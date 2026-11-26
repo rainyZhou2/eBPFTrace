@@ -308,7 +308,7 @@ query 服务在 HTTP 端口的 `/` 提供浏览器 UI：过滤器（时间范围
 
 - `namespace` 和 `pod` 来自 agent 的 `container` processor：pod UID 从任务 cgroup 读取，pod 名、namespace 和容器名从宿主上的容器运行时状态（containerd/CRI-O OCI 配置、Docker labels）读取，入口是 `/proc/1/root`。不需要访问 Kubernetes API，因此拿不到 pod labels。
 - `flamegraph`：每一跳以 `--` 帧叠在下面，先是 `<- comm`，然后是它的唤醒栈，再是 `waiting: comm` 和它的等待栈。pprof profile 的 sample type 为 `off_cpu/nanoseconds` 与 `waits/count`，可用于 `go tool pprof`、speedscope 或 Pyroscope；`etrace doctor -pprof file` 也会写一份。
-- 单次等待的直接唤醒标为 `wake_evidence: observed`，按重叠关联的上游跳标为 `wake_evidence: inferred`。`wait_evidence: inferred` 表示唤醒者的上一段等待与本次等待存在推断关联。causes 响应沿用 `root_cause` 作为位置字段，并通过 `cause_evidence` 标明阻塞点、观测到的唤醒或推断的上游等待。
+- 证据会随每一跳贯穿 model、protobuf 和 ClickHouse。直接调度唤醒的 `wake_evidence` 为 `observed`，按重叠关联的上游跳为 `inferred`；`wait_evidence: inferred` 表示唤醒者的上一段等待与本次等待存在推断关联。causes 响应保留 `root_cause`，并增加 `cause_evidence`（阻塞点、观测到的唤醒或推断的上游等待）、`observed_hops`、`inferred_hops`、`inferred_waits` 和 `confidence`（该路径中观测唤醒与等待链接的占比）。
 - 没有 trace 后端时，trace 事件会以未归属形式返回，`partial` 字段说明原因。
 - API 请求按客户端限流（`rate_limit`）。ClickHouse 查询会带上 `storage.options` 里的 `max_execution_time`、`max_memory_usage` 和 `max_rows_to_group_by`；超过预算的查询直接失败，而不是拖垮副本。
 

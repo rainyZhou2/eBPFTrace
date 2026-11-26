@@ -70,12 +70,22 @@ message TraceContext {
   bytes span_id = 2;
 }
 
+enum Evidence {
+  EVIDENCE_UNSPECIFIED = 0;
+  // Seen directly in sched_waking.
+  EVIDENCE_OBSERVED = 1;
+  // Linked by time overlap with the waker's previous wait.
+  EVIDENCE_INFERRED = 2;
+}
+
 message Hop {
   Task task = 1;
   Stack wake_stack = 2;
   Stack wait_stack = 3;
   uint64 wait_ns = 4;
   TraceContext trace = 5;
+  Evidence wake_evidence = 6;
+  Evidence wait_evidence = 7;
 }
 
 enum OffCPUReason {

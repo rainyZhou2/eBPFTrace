@@ -306,6 +306,9 @@ TEST(Wire, RoundTrip) {
 	                                 10,
 	                                 1,
 	                                 model::OffCPUReason::blocked}};
+	in.offcpu[0].chain[0].wake_evidence = model::Evidence::observed;
+	in.offcpu[0].chain[0].wait_evidence = model::Evidence::inferred;
+	in.offcpu[0].chain[1].wake_evidence = model::Evidence::inferred;
 	in.events = {model::OffCPUEvent{model::Task{1, 2, "c", "", model::PodRef{"u", "p", "ns", "c"}},
 	                                {},
 	                                {},
@@ -325,6 +328,9 @@ TEST(Wire, RoundTrip) {
 	ASSERT_EQ(s.chain.size(), 2u);
 	EXPECT_EQ(s.chain[0].wait_ns, 7u);
 	EXPECT_EQ(s.chain[0].trace, tc);
+	EXPECT_EQ(s.chain[0].wake_evidence, model::Evidence::observed);
+	EXPECT_EQ(s.chain[0].wait_evidence, model::Evidence::inferred);
+	EXPECT_EQ(s.chain[1].wake_evidence, model::Evidence::inferred);
 	EXPECT_EQ(s.chain[0].wait_stack[0].address, 9u);
 	EXPECT_EQ(s.chain[1].task.comm, "kworker");
 	ASSERT_EQ(out.events.size(), 1u);

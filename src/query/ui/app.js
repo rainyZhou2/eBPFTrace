@@ -134,7 +134,8 @@
         if (c.cause_evidence === "observed_wakeup" && c.hop_wait_ns[0] > 0) evidence += " (prior wait inferred)";
         return [{ text: path.join(" ← "), code: true }, { text: c.blocked_in, code: true },
           { text: evidence + ": " + c.root_cause, code: true },
-          { text: ms(c.total_ns), num: true }, { text: c.count, num: true }];
+          { text: ms(c.total_ns), num: true }, { text: c.count, num: true },
+          { text: c.confidence + "%", num: true }];
       });
     });
   }

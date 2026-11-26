@@ -123,13 +123,21 @@ void Options::validate() const {
 	if (dial_timeout <= Duration(0) || query_timeout <= Duration(0)) {
 		throw Error("dial_timeout and query_timeout must be positive");
 	}
+	if (max_execution_time <= Duration(0)) {
+		throw Error("max_execution_time must be positive");
+	}
+	if (max_memory_usage == 0 || max_rows_to_group_by == 0) {
+		throw Error("max_memory_usage and max_rows_to_group_by must be positive");
+	}
 }
 
 void decode_fields(config::Fields& f, Options& o) {
 	f("addrs", o.addrs)("database", o.database)("samples_table", o.samples_table)("events_table", o.events_table)(
 	        "cluster", o.cluster)("username", o.username)("password", o.password)("ttl_days", o.ttl_days)(
-	        "dial_timeout", o.dial_timeout)("query_timeout", o.query_timeout)("max_open_conns", o.max_open_conns)(
-	        "auto_migrate", o.auto_migrate);
+	        "dial_timeout", o.dial_timeout)("query_timeout", o.query_timeout)(
+	        "max_execution_time", o.max_execution_time)("max_memory_usage", o.max_memory_usage)(
+	        "max_rows_to_group_by", o.max_rows_to_group_by)("max_open_conns", o.max_open_conns)("auto_migrate",
+	                                                                                            o.auto_migrate);
 }
 
 std::vector<std::string> schema_statements(const Options& o) {

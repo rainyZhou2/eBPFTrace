@@ -28,6 +28,12 @@ struct Options {
 	// query_timeout bounds each send and receive on a connection so a
 	// stalled server cannot block a writer or reader forever.
 	Duration query_timeout = 60s;
+	// Server-side read budgets. max_execution_time is enforced by
+	// ClickHouse; max_memory_usage and max_rows_to_group_by reject queries
+	// that would exhaust a replica.
+	Duration max_execution_time = 30s;
+	uint64_t max_memory_usage = uint64_t{1} << 30;
+	uint64_t max_rows_to_group_by = 2000000;
 	int max_open_conns = 16;
 	bool auto_migrate = true;
 
@@ -65,8 +71,9 @@ public:
 private:
 	class Lease;
 	friend class Lease;
-	std::unique_ptr<::clickhouse::Client> connect();
+	std::unique_ptr<::clickhouse::Client> connect(Duration dial, Duration io);
 	Lease acquire();
+	std::string query_settings() const;
 	void give_back(std::unique_ptr<::clickhouse::Client> c);
 
 	Options opts_;

@@ -2,6 +2,8 @@
 
 #include <clickhouse/client.h>
 
+#include <algorithm>
+#include <chrono>
 #include <format>
 #include <map>
 
@@ -291,7 +293,15 @@ Store::~Store() {
 	close();
 }
 
-std::unique_ptr<ch::Client> Store::connect() {
+std::string Store::query_settings() const {
+	auto seconds = std::max<int64_t>(1, std::chrono::ceil<std::chrono::seconds>(opts_.max_execution_time).count());
+	return std::format(
+	        " SETTINGS max_execution_time = {}, max_memory_usage = {}, max_rows_to_group_by = {}, "
+	        "group_by_overflow_mode = 'throw'",
+	        seconds, opts_.max_memory_usage, opts_.max_rows_to_group_by);
+}
+
+std::unique_ptr<ch::Client> Store::connect(Duration dial, Duration io) {
 	ch::ClientOptions co;
 	std::vector<ch::Endpoint> eps;
 	for (const auto& a : opts_.addrs) {
@@ -302,9 +312,9 @@ std::unique_ptr<ch::Client> Store::connect() {
 	        .SetUser(opts_.username.empty() ? "default" : opts_.username)
 	        .SetPassword(opts_.password)
 	        .SetCompressionMethod(ch::CompressionMethod::LZ4)
-	        .SetConnectionConnectTimeout(ms(opts_.dial_timeout))
-	        .SetConnectionRecvTimeout(ms(opts_.query_timeout))
-	        .SetConnectionSendTimeout(ms(opts_.query_timeout))
+	        .SetConnectionConnectTimeout(ms(dial))
+	        .SetConnectionRecvTimeout(ms(io))
+	        .SetConnectionSendTimeout(ms(io))
 	        .SetSendRetries(1);
 	try {
 		return std::make_unique<ch::Client>(co);
@@ -331,7 +341,7 @@ Store::Lease Store::acquire() {
 		open_++;
 	}
 	try {
-		return Lease(*this, connect());
+		return Lease(*this, connect(opts_.dial_timeout, opts_.query_timeout));
 	} catch (...) {
 		give_back(nullptr);
 		throw;
@@ -525,6 +535,7 @@ GROUP BY c, stack, cc, cwk, cwt,
 ORDER BY 7 DESC
 LIMIT {3})",
 	                       depth, samples_, w.sql(), limit_of(q.limit));
+	sql += query_settings();
 	std::vector<ChainValue> out;
 	ch::Query query(sql);
 	query.SetParams(w.params);
@@ -589,6 +600,7 @@ FROM {} {} ORDER BY start_time)",
 	if (q.limit > 0) {
 		sql += std::format(" LIMIT {}", q.limit);
 	}
+	sql += query_settings();
 	ch::Query query(sql);
 	query.SetParams(w.params);
 	query.OnData([&](const ch::Block& b) {
@@ -636,10 +648,18 @@ FROM {} {} ORDER BY start_time)",
 	c.done();
 }
 
-void Store::ping(Duration) {
-	auto c = acquire();
-	c->Ping();
-	c.done();
+void Store::ping(Duration timeout) {
+	{
+		std::lock_guard lock(mu_);
+		if (closed_) {
+			throw Error("clickhouse: store closed");
+		}
+	}
+	if (timeout <= Duration(0)) {
+		timeout = opts_.query_timeout;
+	}
+	auto client = connect(timeout, timeout);
+	client->Ping();
 }
 
 void Store::close() {

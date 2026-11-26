@@ -98,7 +98,10 @@
     var q = params();
     document.getElementById("dl-pprof").href = "/api/v1/offcpu/flamegraph?" + q + "&format=pprof";
     document.getElementById("dl-collapsed").href = "/api/v1/offcpu/flamegraph?" + q + "&format=collapsed";
-    return getJSON("/api/v1/offcpu/flamegraph", q).then(function (tree) { flameRoot = tree; drawFlame(tree); });
+    return getJSON("/api/v1/offcpu/flamegraph", params({ limit: "2000" })).then(function (tree) {
+      flameRoot = tree;
+      drawFlame(tree);
+    });
   }
 
   // ---- tables ----

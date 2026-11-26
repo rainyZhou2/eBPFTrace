@@ -49,7 +49,7 @@ private:
 	storage::Filter parse_filter(const httplib::Request& req, Duration span) const;
 	int depth(const httplib::Request& req) const;
 	int event_limit(const httplib::Request& req) const;
-	void internal(httplib::Response& res, const std::exception& e) const;
+	void internal(const httplib::Request& req, httplib::Response& res, const std::exception& e) const;
 
 	bool check_auth(const httplib::Request& req, httplib::Response& res) const;
 	std::string client_key(const httplib::Request& req) const;

@@ -90,6 +90,9 @@ TEST(UI, ServesPageAndAssetsWithPolicy) {
 	}
 	auto res = c.Get("/ui/../../CMakeLists.txt");
 	EXPECT_TRUE(!res || res->status != 200 || res->body.find("project(") == std::string::npos);
+	res = c.Get("/ui/app.js");
+	ASSERT_TRUE(res);
+	EXPECT_NE(res->body.find("limit: \"2000\""), std::string::npos);
 }
 
 TEST(QueryHTTP, ValidatesParametersAndServesFormats) {
@@ -254,6 +257,53 @@ std::string gunzip(const std::string& in) {
 	out.resize(zs.total_out);
 	inflateEnd(&zs);
 	return out;
+}
+
+TEST(QueryHTTP, CompressesLargeResponses) {
+	storage::memory::Store store(storage::memory::Options{Duration(0)});
+	model::Batch b;
+	b.id = "gzip";
+	b.resource.node = "n1";
+	b.window_start = etrace::now() - 1s;
+	b.window_end = etrace::now();
+	for (int i = 0; i < 80; i++) {
+		model::Stack stack;
+		for (int j = 0; j < 20; j++) {
+			stack.push_back(model::Frame{0, std::string(64, static_cast<char>('a' + (i + j) % 26)), "",
+			                             model::FrameKind::kernel});
+		}
+		b.offcpu.push_back(model::OffCPUSample{
+		        model::Task{static_cast<uint32_t>(i), 0, "api-" + std::to_string(i), "", {}},
+		        std::move(stack),
+		        {},
+		        100,
+		        1,
+		        {}});
+	}
+	store.write_batch(b);
+	query::Service svc(store);
+	query::Handler h(svc, nullptr,
+	                 query::HandlerOptions{query::HandlerConfig{7 * 24h, 15min, 24h, 4, 100},
+	                                       query::AuthConfig{.allow_unauthenticated = true},
+	                                       ratelimit::Policy{.enabled = false}, false},
+	                 log::Logger::discard());
+	TestServer r([&](httplib::Server& s) { h.routes(s); });
+	httplib::Client c(r.url());
+
+	auto packed =
+	        c.Get("/api/v1/offcpu/flamegraph?format=collapsed", httplib::Headers{{"Accept-Encoding", "gzip"}});
+	ASSERT_TRUE(packed);
+	EXPECT_EQ(packed->status, 200);
+	EXPECT_EQ(packed->get_header_value("Content-Encoding"), "gzip");
+	EXPECT_EQ(packed->get_header_value("Vary"), "Accept-Encoding");
+	EXPECT_GT(packed->body.size(), 1024u);
+	EXPECT_NE(packed->body.find("api-0"), std::string::npos);
+
+	auto plain =
+	        c.Get("/api/v1/offcpu/flamegraph?format=collapsed", httplib::Headers{{"Accept-Encoding", "gzip;q=0"}});
+	ASSERT_TRUE(plain);
+	EXPECT_EQ(plain->status, 200);
+	EXPECT_TRUE(plain->get_header_value("Content-Encoding").empty());
 }
 
 std::string base64_decode(const std::string& in) {

@@ -4,6 +4,7 @@
 #include <sstream>
 
 #include "platform/auth.h"
+#include "platform/compress.h"
 #include "platform/config.h"
 #include "platform/flags.h"
 #include "platform/lru.h"
@@ -117,6 +118,16 @@ TEST(RateLimit, TokenBucket) {
 	EXPECT_TRUE(limiter.allow("other"));
 	now += 2min;
 	EXPECT_TRUE(limiter.allow("client"));
+}
+
+TEST(Compress, GzipNegotiation) {
+	EXPECT_TRUE(compress::accepts_gzip("gzip"));
+	EXPECT_TRUE(compress::accepts_gzip("br, gzip;q=0.5"));
+	EXPECT_TRUE(compress::accepts_gzip("*"));
+	EXPECT_FALSE(compress::accepts_gzip("gzip;q=0"));
+	EXPECT_FALSE(compress::accepts_gzip("gzip;q=0, *;q=1"));
+	EXPECT_FALSE(compress::accepts_gzip("identity"));
+	EXPECT_FALSE(compress::accepts_gzip(""));
 }
 
 TEST(Duration, ParseAndFormatLikeGo) {

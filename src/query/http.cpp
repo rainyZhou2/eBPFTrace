@@ -7,6 +7,7 @@
 #include <sstream>
 #include <utility>
 
+#include "platform/compress.h"
 #include "platform/hex.h"
 #include "platform/http.h"
 
@@ -60,14 +61,32 @@ std::string lower(std::string s) {
 	return s;
 }
 
-void write_json(httplib::Response& res, int status, const Json& j) {
-	http::write_json(res, status, html_safe_dump(j));
+constexpr size_t kMinGzipBytes = 1024;
+
+void write_body(const httplib::Request& req, httplib::Response& res, int status, const std::string& body,
+                const char* content_type) {
+	res.status = status;
+	res.set_header("Vary", "Accept-Encoding");
+	if (body.size() >= kMinGzipBytes && compress::accepts_gzip(req.get_header_value("Accept-Encoding"))) {
+		if (auto packed = compress::gzip(body)) {
+			res.set_header("Content-Encoding", "gzip");
+			res.set_content(*packed, content_type);
+			return;
+		}
+	}
+	res.set_content(body, content_type);
 }
 
-void write_error(httplib::Response& res, int status, const std::string& msg) {
+void write_json(const httplib::Request& req, httplib::Response& res, int status, const Json& j) {
+	auto body = html_safe_dump(j);
+	body += '\n';
+	write_body(req, res, status, body, "application/json");
+}
+
+void write_error(const httplib::Request& req, httplib::Response& res, int status, const std::string& msg) {
 	Json j;
 	j["error"] = msg;
-	write_json(res, status, j);
+	write_json(req, res, status, j);
 }
 
 }  // namespace
@@ -102,7 +121,7 @@ bool Handler::check_auth(const httplib::Request& req, httplib::Response& res) co
 		return true;
 	}
 	res.set_header("WWW-Authenticate", auth_.challenge());
-	write_error(res, 401, "unauthorized");
+	write_error(req, res, 401, "unauthorized");
 	return false;
 }
 
@@ -112,7 +131,7 @@ void Handler::routes(httplib::Server& srv) {
 			return httplib::Server::HandlerResponse::Unhandled;
 		}
 		if (!limiter_.allow(client_key(req))) {
-			write_error(res, 429, "rate limit exceeded");
+			write_error(req, res, 429, "rate limit exceeded");
 			res.set_header("Retry-After", "1");
 			return httplib::Server::HandlerResponse::Handled;
 		}
@@ -185,9 +204,9 @@ storage::Filter Handler::parse_filter(const httplib::Request& req, Duration span
 	return f;
 }
 
-void Handler::internal(httplib::Response& res, const std::exception& e) const {
+void Handler::internal(const httplib::Request& req, httplib::Response& res, const std::exception& e) const {
 	log_.error("query failed", {{"err", e}});
-	write_error(res, 500, "query failed");
+	write_error(req, res, 500, "query failed");
 }
 
 void Handler::flamegraph(const httplib::Request& req, httplib::Response& res) {
@@ -196,25 +215,25 @@ void Handler::flamegraph(const httplib::Request& req, httplib::Response& res) {
 		fr = FlameRequest{parse_filter(req, cfg_.default_span), depth(req),
 		                  atoi_default(req.get_param_value("limit"), 0)};
 	} catch (const BadRequest& e) {
-		return write_error(res, 400, e.what());
+		return write_error(req, res, 400, e.what());
 	}
 	auto format = req.get_param_value("format");
 	if (format != "" && format != "json" && format != "collapsed" && format != "pprof") {
-		return write_error(res, 400, std::format("unknown format \"{}\"", format));
+		return write_error(req, res, 400, std::format("unknown format \"{}\"", format));
 	}
 	try {
 		if (format == "collapsed") {
 			std::ostringstream out;
 			flame::write_collapsed(out, svc_.lines(fr));
-			res.set_content(out.str(), "text/plain; charset=utf-8");
+			write_body(req, res, 200, out.str(), "text/plain; charset=utf-8");
 		} else if (format == "pprof") {
 			res.set_header("Content-Disposition", "attachment; filename=\"offcpu.pb.gz\"");
 			res.set_content(svc_.profile(fr).gzip(), "application/octet-stream");
 		} else {
-			write_json(res, 200, flame::to_json(*svc_.tree(fr)));
+			write_json(req, res, 200, flame::to_json(*svc_.tree(fr)));
 		}
 	} catch (const std::exception& e) {
-		internal(res, e);
+		internal(req, res, e);
 	}
 }
 
@@ -223,14 +242,14 @@ void Handler::causes(const httplib::Request& req, httplib::Response& res) {
 	try {
 		f = parse_filter(req, cfg_.default_span);
 	} catch (const BadRequest& e) {
-		return write_error(res, 400, e.what());
+		return write_error(req, res, 400, e.what());
 	}
 	try {
 		Json j;
 		j["causes"] = to_json(svc_.causes(f, depth(req), atoi_default(req.get_param_value("limit"), 50)));
-		write_json(res, 200, j);
+		write_json(req, res, 200, j);
 	} catch (const std::exception& e) {
-		internal(res, e);
+		internal(req, res, e);
 	}
 }
 
@@ -260,14 +279,14 @@ void Handler::events(const httplib::Request& req, httplib::Response& res) {
 			eq.min_duration = d;
 		}
 	} catch (const BadRequest& e) {
-		return write_error(res, 400, e.what());
+		return write_error(req, res, 400, e.what());
 	}
 	try {
 		Json j;
 		j["events"] = to_json(svc_.reader().events(eq));
-		write_json(res, 200, j);
+		write_json(req, res, 200, j);
 	} catch (const std::exception& e) {
-		internal(res, e);
+		internal(req, res, e);
 	}
 }
 
@@ -280,12 +299,12 @@ void Handler::trace(const httplib::Request& req, httplib::Response& res, const s
 		}
 		f = parse_filter(req, cfg_.trace_lookback);
 	} catch (const BadRequest& e) {
-		return write_error(res, 400, e.what());
+		return write_error(req, res, 400, e.what());
 	}
 	try {
-		write_json(res, 200, to_json(svc_.trace_report(backend_, trace_id, f, event_limit(req))));
+		write_json(req, res, 200, to_json(svc_.trace_report(backend_, trace_id, f, event_limit(req))));
 	} catch (const std::exception& e) {
-		internal(res, e);
+		internal(req, res, e);
 	}
 }
 

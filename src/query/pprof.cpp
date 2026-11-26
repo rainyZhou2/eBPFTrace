@@ -1,9 +1,9 @@
 #include "query/pprof.h"
 
-#include <zlib.h>
-
 #include <unordered_map>
+#include <utility>
 
+#include "platform/compress.h"
 #include "platform/error.h"
 
 namespace etrace::query::pprof {
@@ -171,28 +171,12 @@ std::string Profile::marshal() const {
 	return out;
 }
 
-std::string gzip_compress(const std::string& data) {
-	z_stream zs{};
-	if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
-		throw Error("gzip: init failed");
-	}
-	std::string out;
-	out.resize(deflateBound(&zs, data.size()) + 32);
-	zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
-	zs.avail_in = static_cast<uInt>(data.size());
-	zs.next_out = reinterpret_cast<Bytef*>(out.data());
-	zs.avail_out = static_cast<uInt>(out.size());
-	int rc = deflate(&zs, Z_FINISH);
-	deflateEnd(&zs);
-	if (rc != Z_STREAM_END) {
+std::string Profile::gzip() const {
+	auto out = compress::gzip(marshal());
+	if (!out) {
 		throw Error("gzip: compress failed");
 	}
-	out.resize(zs.total_out);
-	return out;
-}
-
-std::string Profile::gzip() const {
-	return gzip_compress(marshal());
+	return std::move(*out);
 }
 
 }  // namespace etrace::query::pprof

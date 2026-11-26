@@ -113,7 +113,7 @@ etrace_library(etrace_platform
   SOURCES src/platform/time.cpp src/platform/log.cpp src/platform/config.cpp src/platform/backoff.cpp
           src/platform/spool.cpp src/platform/lifecycle.cpp src/platform/flags.cpp src/platform/url.cpp
           src/platform/tls.cpp src/platform/http.cpp src/platform/telemetry.cpp src/platform/grpc.cpp
-          src/platform/auth.cpp src/platform/ratelimit.cpp
+          src/platform/auth.cpp src/platform/ratelimit.cpp src/platform/compress.cpp
   DEPS yaml-cpp::yaml-cpp httplib::httplib nlohmann_json::nlohmann_json prometheus-cpp::core gRPC::grpc++
        OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 

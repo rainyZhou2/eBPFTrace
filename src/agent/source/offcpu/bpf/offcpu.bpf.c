@@ -263,7 +263,7 @@ const volatile __u64 slow_event_ns = 0;
 const volatile __u32 chain_depth = MAX_HOPS;
 const volatile __u64 gpu_min_wait_ns = 1000000;
 
-volatile __u32 generation = 0;
+#define GPU_WAIT_TIMEOUT_NS 60000000000ULL
 
 #define DEFINE_MAP(_name, _type, _key, _value, _max)	\
 	struct {					\
@@ -279,8 +279,8 @@ DEFINE_MAP(last_waits, BPF_MAP_TYPE_LRU_HASH, __u32, struct last_wait, 16384);
 DEFINE_MAP(tls_reg, BPF_MAP_TYPE_LRU_HASH, __u32, struct tls_ref, 65536);
 DEFINE_MAP(stacks, BPF_MAP_TYPE_LRU_HASH, __u64, struct stack, 32768);
 DEFINE_MAP(chains, BPF_MAP_TYPE_LRU_HASH, __u64, struct chain, 16384);
-DEFINE_MAP(counts_0, BPF_MAP_TYPE_HASH, struct offcpu_key, struct offcpu_val, 16384);
-DEFINE_MAP(counts_1, BPF_MAP_TYPE_HASH, struct offcpu_key, struct offcpu_val, 16384);
+DEFINE_MAP(counts_0, BPF_MAP_TYPE_HASH, struct offcpu_key, struct offcpu_val, 65536);
+DEFINE_MAP(counts_1, BPF_MAP_TYPE_HASH, struct offcpu_key, struct offcpu_val, 65536);
 DEFINE_MAP(scratch_stack, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, struct stack, 1);
 DEFINE_MAP(scratch_chain, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, struct chain, 2);
 DEFINE_MAP(scratch_wait, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, struct last_wait, 1);
@@ -296,6 +296,7 @@ DEFINE_MAP(kernel_names, BPF_MAP_TYPE_LRU_HASH, struct handle_key, struct kernel
 DEFINE_MAP(launch_hits, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, __u64, 1);
 DEFINE_MAP(launch_scope, BPF_MAP_TYPE_LRU_HASH, __u32, struct launch_scope, 65536);
 DEFINE_MAP(drops, BPF_MAP_TYPE_ARRAY, __u32, __u64, 8);
+DEFINE_MAP(generation, BPF_MAP_TYPE_ARRAY, __u32, __u32, 1);
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -785,7 +786,7 @@ int BPF_PROG(on_waking, struct task_struct *p)
 
 	__u32 wakee = p->pid;
 	struct start_rec *start = bpf_map_lookup_elem(&starts, &wakee);
-	if (!start || start->reason != REASON_BLOCKED)
+	if (!start || start->reason != REASON_BLOCKED || start->tgid != p->tgid)
 		return 0;
 	__u64 wakee_start = start->ts;
 
@@ -793,6 +794,7 @@ int BPF_PROG(on_waking, struct task_struct *p)
 	struct chain *c = bpf_map_lookup_elem(&scratch_chain, &zero);
 	if (!c)
 		return 0;
+	__builtin_memset(c, 0, sizeof(*c));
 
 	struct task_struct *cur = (void *)bpf_get_current_task_btf();
 	struct hop *h0 = &c->hops[0];
@@ -872,7 +874,9 @@ static __always_inline void accumulate_into(void *map, struct offcpu_key *key, _
 
 static __always_inline void accumulate(struct offcpu_key *key, __u64 delta, struct chain *c)
 {
-	if (generation & 1)
+	__u32 zero = 0;
+	__u32 *gen = bpf_map_lookup_elem(&generation, &zero);
+	if (gen && (*gen & 1))
 		accumulate_into(&counts_1, key, delta, c);
 	else
 		accumulate_into(&counts_0, key, delta, c);
@@ -887,6 +891,7 @@ static __always_inline void emit_event(__u64 start_ns, struct trace_ctx *trace, 
 		record_drop(DROP_EVENT);
 		return;
 	}
+	__builtin_memset(e, 0, sizeof(*e));
 	e->start_ns = start_ns;
 	e->end_ns = now;
 	e->pid = key->pid;
@@ -938,7 +943,7 @@ static __always_inline void on_block(void *ctx, struct task_struct *prev, __u64 
 		.reason = reason,
 	};
 	struct gpu_wait *w = bpf_map_lookup_elem(&gpu_waits, &pid);
-	rec.in_gpu = w && w->tgid == rec.tgid;
+	rec.in_gpu = w && w->tgid == rec.tgid && now >= w->ts && now - w->ts < GPU_WAIT_TIMEOUT_NS;
 	rec.kstack = capture_stack(ctx, 0);
 	if (capture_user_stacks)
 		rec.ustack = capture_user_stack(ctx);
@@ -953,6 +958,10 @@ static __always_inline void on_resume(struct task_struct *next, __u64 now)
 	struct start_rec *start = bpf_map_lookup_elem(&starts, &pid);
 	if (!start)
 		return;
+	if (start->tgid != next->tgid) {
+		bpf_map_delete_elem(&starts, &pid);
+		return;
+	}
 
 	__u64 delta = now - start->ts;
 	struct chain *c = NULL;
@@ -963,6 +972,7 @@ static __always_inline void on_resume(struct task_struct *next, __u64 now)
 		__u32 zero = 0;
 		struct last_wait *lw = bpf_map_lookup_elem(&scratch_wait, &zero);
 		if (lw) {
+			__builtin_memset(lw, 0, sizeof(*lw));
 			lw->start = start->ts;
 			lw->end = now;
 			lw->kstack = start->kstack;
@@ -1034,9 +1044,11 @@ int on_gpu_enter(void *ctx)
 		return 0;
 
 	__u32 tid = cur->pid;
+	__u64 now = bpf_ktime_get_ns();
 	__u64 sp = ((__u64 *)ctx)[UPROBE_SP];
 	struct gpu_wait *open = bpf_map_lookup_elem(&gpu_waits, &tid);
-	if (open && open->tgid == (__u32)cur->tgid && open->depth > 0 && sp < open->sp) {
+	if (open && open->tgid == (__u32)cur->tgid && open->depth > 0 && now >= open->ts &&
+	    now - open->ts < GPU_WAIT_TIMEOUT_NS && sp < open->sp) {
 		if (open->depth < 255)
 			open->depth++;
 		return 0;
@@ -1047,15 +1059,14 @@ int on_gpu_enter(void *ctx)
 	if (!w)
 		return 0;
 	__u64 cookie = bpf_get_attach_cookie(ctx);
-	w->ts = bpf_ktime_get_ns();
+	__builtin_memset(w, 0, sizeof(*w));
+	w->ts = now;
 	w->sp = sp;
 	w->tgid = cur->tgid;
 	w->api = (__u8)cookie;
 	w->argkind = (__u8)(cookie >> 8);
 	w->obj = w->argkind != GPU_ARG_NONE ? uprobe_arg(ctx, 0) : 0;
 	w->depth = 1;
-	w->has_chain = 0;
-	w->chain.n = 0;
 	w->ustack = capture_user_stacks ? capture_user_stack(ctx) : 0;
 	w->has_trace = read_trace(tid, w->tgid, &w->trace);
 	if (bpf_map_update_elem(&gpu_waits, &tid, w, BPF_ANY))
@@ -1133,13 +1144,14 @@ int on_gpu_exit(void *ctx)
 
 	__u64 now = bpf_ktime_get_ns();
 	__u64 delta = now - w->ts;
+	if (delta < gpu_min_wait_ns || delta > max_block_ns)
+		goto out;
+
 	__u8 op = pending_nccl(tgid, w->ts, now);
 	struct offcpu_key key;
 	__builtin_memset(&key, 0, sizeof(key));
 	__u64 stream;
 	__u32 launches = queued_kernel(w, tgid, &stream, &key);
-	if (delta < gpu_min_wait_ns || delta > max_block_ns)
-		goto out;
 
 	key.pid = tid;
 	key.tgid = tgid;
@@ -1353,6 +1365,20 @@ int on_gpu_fn_exit(void *ctx)
 	if (!bpf_probe_read_user(&hk.handle, sizeof(hk.handle), (void *)fl->out) && hk.handle &&
 	    bpf_probe_read_user_str(n.name, sizeof(n.name), (void *)fl->name) > 0)
 		bpf_map_update_elem(&kernel_names, &hk, &n, BPF_ANY);
+	bpf_map_delete_elem(&fn_lookups, &tid);
+	return 0;
+}
+
+SEC("tp_btf/sched_process_exit")
+int BPF_PROG(on_exit, struct task_struct *p)
+{
+	__u32 tid = p->pid;
+	bpf_map_delete_elem(&starts, &tid);
+	bpf_map_delete_elem(&wakes, &tid);
+	bpf_map_delete_elem(&last_waits, &tid);
+	bpf_map_delete_elem(&tls_reg, &tid);
+	bpf_map_delete_elem(&gpu_waits, &tid);
+	bpf_map_delete_elem(&launch_scope, &tid);
 	bpf_map_delete_elem(&fn_lookups, &tid);
 	return 0;
 }

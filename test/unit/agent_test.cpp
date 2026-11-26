@@ -262,6 +262,13 @@ TEST(Uprobes, MatchMaps) {
 	EXPECT_EQ(got, std::vector<std::string>{"/usr/lib/libetrace_ctx.so"});
 }
 
+TEST(Uprobes, ScanReportsIncompleteProc) {
+	agent::offcpu::uprobes::Scanner scanner{"/nonexistent/etrace-proc", {"libetrace_ctx"}, {}};
+	auto result = scanner.scan();
+	EXPECT_FALSE(result.complete);
+	EXPECT_TRUE(result.targets.empty());
+}
+
 TEST(Gpu, MatchSymbols) {
 	using namespace agent::offcpu::gpu;
 	EXPECT_EQ(api_name(match_api("cuStreamSynchronize")), "cuStreamSynchronize");

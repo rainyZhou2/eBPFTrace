@@ -57,36 +57,45 @@ std::vector<std::string> match_maps(std::istream& in, const std::vector<std::str
 	return out;
 }
 
-std::vector<Target> Scanner::scan() const {
+ScanResult Scanner::scan() const {
 	std::set<std::string> seen;
-	std::vector<Target> out;
+	ScanResult result;
 	auto add = [&](const std::string& key, const std::string& path) {
 		if (seen.insert(key).second) {
-			out.push_back(Target{key, path});
+			result.targets.push_back(Target{key, path});
 		}
 	};
 	for (const auto& p : paths) {
 		add(file_key(p), p);
 	}
 	if (patterns.empty()) {
-		return out;
+		return result;
 	}
 	std::error_code ec;
-	for (const auto& e : fs::directory_iterator(proc_root, ec)) {
-		auto name = e.path().filename().string();
+	fs::directory_iterator it(proc_root, ec), end;
+	if (ec) {
+		result.complete = false;
+		return result;
+	}
+	for (; it != end; it.increment(ec)) {
+		if (ec) {
+			result.complete = false;
+			return result;
+		}
+		auto name = it->path().filename().string();
 		if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos || name == "0") {
 			continue;
 		}
-		std::ifstream in(e.path() / "maps");
+		std::ifstream in(it->path() / "maps");
 		if (!in) {
 			continue;
 		}
 		for (const auto& path : match_maps(in, patterns)) {
-			auto full = (e.path() / "root" / fs::path(path).relative_path()).string();
+			auto full = (it->path() / "root" / fs::path(path).relative_path()).string();
 			add(file_key(full), full);
 		}
 	}
-	return out;
+	return result;
 }
 
 ProbeFn single(std::string symbol, std::string prog) {
@@ -108,7 +117,12 @@ void Manager::run(std::stop_token st, Duration interval) {
 // stays mapped once none of its probes attached; probes that fail in a
 // target where others attached are logged and skipped.
 void Manager::sync() {
-	auto targets = scanner_.scan();
+	auto result = scanner_.scan();
+	if (!result.complete) {
+		log_.warn("uprobe scan incomplete", {{"probes", name_}, {"proc", scanner_.proc_root}});
+		return;
+	}
+	auto& targets = result.targets;
 	std::set<std::string> live;
 	std::lock_guard lock(mu_);
 	for (const auto& t : targets) {

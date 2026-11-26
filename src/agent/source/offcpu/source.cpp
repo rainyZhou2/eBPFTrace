@@ -134,7 +134,7 @@ void Source::start() {
 	obj_ = std::move(obj);
 	unwinder_mode_.Add({{"mode", mode}}).Set(1);
 	try {
-		std::vector<std::string> progs{"on_switch", "on_waking"};
+		std::vector<std::string> progs{"on_switch", "on_waking", "on_exit"};
 		if (mode == kUnwindDwarf) {
 			progs.emplace_back("on_exec");
 		}
@@ -330,8 +330,11 @@ void Source::collect(model::Batch& b) {
 		throw Error("source not started");
 	}
 	uint32_t idle = gen_ & 1;
-	gen_++;
-	*obj_->bss<uint32_t>("generation") = gen_;
+	uint32_t generation = ++gen_;
+	uint32_t zero = 0;
+	if (bpf_map_update_elem(obj_->map_fd("generation"), &zero, &generation, BPF_ANY) != 0) {
+		throw Error("set collection generation");
+	}
 	std::this_thread::sleep_for(opts_.drain_grace);
 
 	std::unordered_map<uint64_t, std::vector<uint64_t>> stacks;

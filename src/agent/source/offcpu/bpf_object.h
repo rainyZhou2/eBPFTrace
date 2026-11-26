@@ -55,13 +55,6 @@ public:
 	bpf_map* map(const std::string& name) const;
 	int map_fd(const std::string& name) const { return bpf_map__fd(map(name)); }
 	bpf_program* program(const std::string& name) const;
-	// bss returns the live address of a global variable in .bss; only valid
-	// after load, when the section is memory mapped from the kernel.
-	template <class T>
-	volatile T* bss(const std::string& var) {
-		return static_cast<volatile T*>(var_ptr(".bss", var, sizeof(T)));
-	}
-
 	std::unique_ptr<Link> attach(const std::string& prog);
 	// attach_uprobe attaches prog to symbol in the file at path for every
 	// process that maps it.

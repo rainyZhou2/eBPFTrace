@@ -24,6 +24,11 @@ struct Target {
 	std::string path;
 };
 
+struct ScanResult {
+	std::vector<Target> targets;
+	bool complete = true;
+};
+
 struct Scanner {
 	std::string proc_root;
 	std::vector<std::string> patterns;
@@ -32,7 +37,8 @@ struct Scanner {
 	// scan returns executable mappings whose path matches a configured
 	// pattern, plus configured static paths. Paths are resolved through
 	// /proc/<pid>/root so binaries in other mount namespaces are reachable.
-	std::vector<Target> scan() const;
+	// complete is false when /proc itself could not be read.
+	ScanResult scan() const;
 };
 
 std::vector<std::string> match_maps(std::istream& in, const std::vector<std::string>& patterns);

@@ -168,7 +168,16 @@ The `sched_switch` and `sched_waking` hooks capture kernel and user stacks synch
 
 ### Adaptive collection
 
-The off-CPU source can run an `agent/policy` controller when `policy.enabled` is true. Each interval it samples the BPF drop counters, agent CPU time, accepted event rate, process count, and active unwind mode. Under CPU, drop, event-rate, or process pressure it lowers `max_events_per_interval`, stack depth, and the untraced-event sample rate; after `cooldown` with headroom it raises them again. On a DWARF-loaded source it can also switch to frame pointers; a frame-pointer-only source cannot switch back to DWARF. Trace-context events are never sampled. The controller changes only source limits through a narrow adapter; BPF capture, processors, and exporters keep their own contracts. `configs/agent.yaml` enables it with conservative thresholds; leave `policy.enabled: false` to use static limits.
+The off-CPU source can run an `agent/policy` controller when `policy.enabled` is true. Each interval it samples BPF drop counters, BPF `run_time_ns`/`run_cnt`, raw wait rate, accepted event rate, ring-buffer drops, user queue saturation, agent CPU time, process count, and active unwind mode. Under CPU, BPF-runtime, drop, raw-rate, ring-buffer, queue, or process pressure it lowers `max_events_per_interval`, stack depth, and the untraced-event sample rate; after `cooldown` with headroom it raises them again. Accepted rate and policy-caused sampling drops are excluded from the pressure signal so sampling cannot feed back into more sampling. On a DWARF-loaded source it can also switch to frame pointers; a frame-pointer-only source cannot switch back to DWARF. Trace-context events are never sampled.
+
+Sampling is decided when the wait starts and carried in the wait record, so the same wait is either sampled or skipped as a unit; it is not an independent decision at the end event. Untraced waits skip user-stack unwinding and event emission before the ring buffer; the kernel stack is still captured so aggregate counts stay complete. A controller change is committed only when the source reports the actual applied state; failed updates are retried on the next interval. The controller changes only source limits through a narrow adapter; BPF capture, processors, and exporters keep their own contracts. `configs/agent.yaml` enables it with conservative thresholds; leave `policy.enabled: false` to use static limits.
+
+BPF runtime statistics require `kernel.bpf_stats_enabled=1`; without it the run-time signals are zero and the controller falls back to the other inputs. Enable it only for diagnosis because the kernel then accounts every program execution:
+
+```sh
+sudo sysctl -w kernel.bpf_stats_enabled=1
+sudo bpftool prog show
+```
 
 ## Architecture
 

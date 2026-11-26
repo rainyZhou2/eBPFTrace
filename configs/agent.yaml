@@ -37,6 +37,9 @@ sources:
         target_event_rate: 5000
         max_cpu_ratio: 0.25
         max_drop_rate: 0
+        max_bpf_ratio: 0.20
+        max_ringbuf_drop_rate: 0
+        max_queue_saturation: 0.90
         max_processes: 2048
         allow_mode_switch: true
       trace_context:

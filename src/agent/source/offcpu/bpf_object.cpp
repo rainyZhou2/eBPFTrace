@@ -73,6 +73,24 @@ BpfObject::~BpfObject() {
 	}
 }
 
+BpfObject::RuntimeStats BpfObject::runtime_stats() const {
+	RuntimeStats stats;
+	bpf_program* program;
+	bpf_object__for_each_program(program, obj_) {
+		int fd = bpf_program__fd(program);
+		if (fd < 0) {
+			continue;
+		}
+		bpf_prog_info info{};
+		__u32 len = sizeof(info);
+		if (bpf_obj_get_info_by_fd(fd, &info, &len) == 0) {
+			stats.run_time_ns += info.run_time_ns;
+			stats.run_cnt += info.run_cnt;
+		}
+	}
+	return stats;
+}
+
 bpf_map* BpfObject::map(const std::string& name) const {
 	auto* m = bpf_object__find_map_by_name(obj_, name.c_str());
 	if (!m) {

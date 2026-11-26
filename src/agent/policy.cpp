@@ -16,14 +16,16 @@ double cpu_ratio(const Signals& previous, const Signals& current, double seconds
 	return delta > 0 ? delta / seconds : 0;
 }
 
-double event_rate(const Signals& previous, const Signals& current, double seconds) {
-	auto delta = current.events >= previous.events ? current.events - previous.events : 0;
-	return static_cast<double>(delta) / seconds;
+uint64_t delta(uint64_t previous, uint64_t current) {
+	return current >= previous ? current - previous : 0;
 }
 
-double drop_rate(const Signals& previous, const Signals& current, double seconds) {
-	auto delta = current.bpf_drops >= previous.bpf_drops ? current.bpf_drops - previous.bpf_drops : 0;
-	return static_cast<double>(delta) / seconds;
+double rate(uint64_t previous, uint64_t current, double seconds) {
+	return static_cast<double>(delta(previous, current)) / seconds;
+}
+
+double bpf_ratio(const Signals& previous, const Signals& current, double seconds) {
+	return static_cast<double>(delta(previous.bpf_run_time_ns, current.bpf_run_time_ns)) / (seconds * 1e9);
 }
 
 uint32_t clamp_events(uint32_t value, const Config& cfg) {
@@ -46,8 +48,9 @@ void decode_fields(config::Fields& f, Config& o) {
 	        "min_events_per_interval", o.min_events_per_interval)("max_unwind_depth", o.max_unwind_depth)(
 	        "min_unwind_depth", o.min_unwind_depth)("max_sample_percent", o.max_sample_percent)(
 	        "min_sample_percent", o.min_sample_percent)("target_event_rate", o.target_event_rate)(
-	        "max_cpu_ratio", o.max_cpu_ratio)("max_drop_rate", o.max_drop_rate)("max_processes", o.max_processes)(
-	        "allow_mode_switch", o.allow_mode_switch);
+	        "max_cpu_ratio", o.max_cpu_ratio)("max_drop_rate", o.max_drop_rate)("max_bpf_ratio", o.max_bpf_ratio)(
+	        "max_ringbuf_drop_rate", o.max_ringbuf_drop_rate)("max_queue_saturation", o.max_queue_saturation)(
+	        "max_processes", o.max_processes)("allow_mode_switch", o.allow_mode_switch);
 }
 
 void Config::validate() const {
@@ -68,7 +71,8 @@ void Config::validate() const {
 	if (max_sample_percent > 100 || min_sample_percent > max_sample_percent) {
 		throw Error("policy sample bounds must be ordered percentages");
 	}
-	if (target_event_rate <= 0 || max_cpu_ratio < 0 || max_drop_rate < 0) {
+	if (target_event_rate <= 0 || max_cpu_ratio < 0 || max_drop_rate < 0 || max_bpf_ratio < 0 ||
+	    max_ringbuf_drop_rate < 0 || max_queue_saturation <= 0 || max_queue_saturation > 1) {
 		throw Error("policy thresholds must be non-negative and target_event_rate positive");
 	}
 }
@@ -77,12 +81,18 @@ Decision Planner::decide(const Signals& previous, const Signals& current, Durati
                          const Decision& decision) const {
 	double seconds = std::max(std::chrono::duration<double>(elapsed).count(), 1e-6);
 	double cpu = cpu_ratio(previous, current, seconds);
-	double events = event_rate(previous, current, seconds);
-	double drops = drop_rate(previous, current, seconds);
-	bool pressure = cpu > cfg_.max_cpu_ratio || events > cfg_.target_event_rate || drops > cfg_.max_drop_rate ||
-	                (cfg_.max_processes != 0 && current.processes > cfg_.max_processes);
-	bool relaxed = !pressure && cpu < cfg_.max_cpu_ratio * 0.5 && events < cfg_.target_event_rate * 0.5 &&
-	               drops == 0 && (cfg_.max_processes == 0 || current.processes < cfg_.max_processes);
+	double raw_rate = rate(previous.raw_events, current.raw_events, seconds);
+	double drops = rate(previous.bpf_drops, current.bpf_drops, seconds);
+	double bpf = bpf_ratio(previous, current, seconds);
+	double ring = rate(previous.ringbuf_drops, current.ringbuf_drops, seconds);
+	auto capacity_delta = delta(previous.capacity_drops, current.capacity_drops);
+	bool process_pressure = cfg_.max_processes != 0 && current.processes > cfg_.max_processes;
+	bool pressure = cpu > cfg_.max_cpu_ratio || raw_rate > cfg_.target_event_rate || drops > cfg_.max_drop_rate ||
+	                bpf > cfg_.max_bpf_ratio || ring > cfg_.max_ringbuf_drop_rate || capacity_delta != 0 ||
+	                current.queue_saturation > cfg_.max_queue_saturation || process_pressure;
+	bool relaxed = !pressure && cpu < cfg_.max_cpu_ratio * 0.5 && raw_rate < cfg_.target_event_rate * 0.5 &&
+	               drops == 0 && bpf < cfg_.max_bpf_ratio * 0.5 && ring == 0 && capacity_delta == 0 &&
+	               current.queue_saturation < cfg_.max_queue_saturation * 0.5 && !process_pressure;
 
 	Decision next = decision;
 	if (pressure) {
@@ -125,16 +135,22 @@ Controller::Controller(Config cfg, Decision initial, Sampler sampler, Sink sink,
       sink_(std::move(sink)),
       log_(std::move(log).with({{"component", "policy"}})) {}
 
-void Controller::apply(const Decision& decision) {
+ApplyResult Controller::apply(const Decision& decision) {
 	try {
-		sink_(decision);
+		return sink_(decision);
 	} catch (const std::exception& e) {
 		log_.warn("policy apply failed", {{"err", e}});
+		return {false, current_};
 	}
 }
 
 void Controller::run(std::stop_token st) {
-	apply(current_);
+	auto initial = apply(current_);
+	if (initial.success) {
+		current_ = initial.actual;
+	} else {
+		log_.warn("initial policy apply failed");
+	}
 	Signals previous;
 	try {
 		previous = sampler_();
@@ -159,12 +175,18 @@ void Controller::run(std::stop_token st) {
 		}
 		auto next = planner_.decide(previous, current, now - previous_at, current_);
 		if (next != current_ && now - last_change >= cfg_.cooldown) {
-			apply(next);
-			log_.info("policy adjusted", {{"max_events", next.max_events_per_interval},
-			                              {"unwind_depth", next.unwind_depth},
-			                              {"sample_percent", next.sample_percent},
-			                              {"unwind_mode", next.unwind_mode}});
-			current_ = std::move(next);
+			auto result = apply(next);
+			if (!result.success) {
+				log_.warn("policy change was not applied; retrying next interval");
+				previous = std::move(current);
+				previous_at = now;
+				continue;
+			}
+			current_ = std::move(result.actual);
+			log_.info("policy adjusted", {{"max_events", current_.max_events_per_interval},
+			                              {"unwind_depth", current_.unwind_depth},
+			                              {"sample_percent", current_.sample_percent},
+			                              {"unwind_mode", current_.unwind_mode}});
 			last_change = now;
 		}
 		previous = std::move(current);

@@ -26,6 +26,7 @@ namespace etrace::agent::offcpu {
 namespace {
 
 constexpr const char* kDropReasons[] = {"stack", "counts", "start", "wake", "event", "chain", "gpu"};
+constexpr uint32_t kEventDropIndex = 4;
 
 // kMinUnwindRefresh bounds how often one process's mappings are re-read
 // when the walker keeps meeting unknown addresses, e.g. in JIT code.
@@ -46,23 +47,6 @@ int64_t mono_to_wall() {
 
 uint64_t ns(Duration d) {
 	return static_cast<uint64_t>(d.count());
-}
-
-bool has_trace(const RawTrace& trace) {
-	for (auto byte : trace.trace_id) {
-		if (byte != 0) {
-			return true;
-		}
-	}
-	return false;
-}
-
-bool keep_event(const RawEvent& event, uint32_t percent) {
-	if (percent >= 100 || has_trace(event.trace)) {
-		return true;
-	}
-	uint64_t key = event.start_ns ^ (static_cast<uint64_t>(event.pid) << 32) ^ event.tgid;
-	return key % 100 < percent;
 }
 
 }  // namespace
@@ -164,6 +148,13 @@ void Source::start() {
 	dwarf_loaded_ = mode == kUnwindDwarf;
 	active_unwind_mode_.store(dwarf_loaded_ ? 1 : 2);
 	unwinder_mode_.Add({{"mode", mode}}).Set(1);
+	uint32_t zero = 0;
+	uint32_t sample = sample_percent_.load();
+	if (bpf_map_update_elem(obj_->map_fd("sample_percent"), &zero, &sample, BPF_ANY) != 0) {
+		auto err = std::format("set initial sample percent: {}", std::strerror(errno));
+		close_locked();
+		throw Error(err);
+	}
 	try {
 		std::vector<std::string> progs{"on_switch", "on_waking", "on_exit"};
 		if (mode == kUnwindDwarf) {
@@ -202,7 +193,7 @@ void Source::start() {
 			                         mode};
 			policy_ = std::make_unique<policy::Controller>(
 			        opts_.policy, std::move(initial), [this] { return policy_signals(); },
-			        [this](const policy::Decision& d) { apply_policy(d); }, log_);
+			        [this](const policy::Decision& d) { return apply_policy(d); }, log_);
 			policy_thread_ = std::jthread([this](std::stop_token st) { policy_->run(st); });
 		}
 	} catch (...) {
@@ -298,7 +289,7 @@ int Source::on_event(void* ctx, void* data, size_t size) {
 	auto ev = decode_event(std::span(static_cast<const char*>(data), size));
 	if (!ev) {
 		s->events_dropped_.Increment();
-		s->policy_dropped_.fetch_add(1);
+		s->policy_decode_drops_.fetch_add(1);
 		return 0;
 	}
 	s->batch_.push_back(*ev);
@@ -321,22 +312,13 @@ void Source::read_events(std::stop_token st) {
 		}
 		size_t accepted = 0, dropped = 0;
 		auto limit = max_events_.load();
-		auto sample = sample_percent_.load();
 		{
 			std::lock_guard lock(ev_mu_);
 			auto room = static_cast<size_t>(limit) - std::min(pending_.size(), static_cast<size_t>(limit));
-			for (const auto& event : batch_) {
-				if (accepted >= room) {
-					dropped++;
-					continue;
-				}
-				if (!keep_event(event, sample)) {
-					dropped++;
-					continue;
-				}
-				pending_.push_back(event);
-				accepted++;
-			}
+			accepted = std::min(room, batch_.size());
+			pending_.insert(pending_.end(), batch_.begin(),
+			                batch_.begin() + static_cast<std::ptrdiff_t>(accepted));
+			dropped = batch_.size() - accepted;
 		}
 		batch_.clear();
 		if (accepted) {
@@ -345,7 +327,7 @@ void Source::read_events(std::stop_token st) {
 		}
 		if (dropped) {
 			events_dropped_.Increment(static_cast<double>(dropped));
-			policy_dropped_.fetch_add(dropped);
+			policy_capacity_drops_.fetch_add(dropped);
 		}
 	}
 }
@@ -615,6 +597,9 @@ uint64_t Source::bpf_drop_count() const {
 	auto fd = obj_->map_fd("drops");
 	uint64_t total = 0;
 	for (uint32_t i = 0; i < std::size(kDropReasons); i++) {
+		if (i == kEventDropIndex) {
+			continue;
+		}
 		uint64_t value = 0;
 		if (bpf_map_lookup_elem(fd, &i, &value) == 0) {
 			total += value;
@@ -643,47 +628,96 @@ policy::Signals Source::policy_signals() {
 	policy::Signals signals;
 	signals.cpu_seconds = policy::process_cpu_seconds();
 	signals.events = policy_events_.load();
-	signals.events_dropped = policy_dropped_.load();
+	signals.capacity_drops = policy_capacity_drops_.load();
+	signals.decode_drops = policy_decode_drops_.load();
+	signals.events_dropped = signals.capacity_drops + signals.decode_drops;
 	signals.bpf_drops = bpf_drop_count();
 	signals.processes = process_count();
 	auto mode = active_unwind_mode_.load();
 	signals.unwind_mode = mode == 1 ? kUnwindDwarf : kUnwindFramePointer;
 	signals.dwarf_available = dwarf_loaded_;
+
+	if (obj_) {
+		auto counter = [](int fd, uint32_t index) {
+			uint64_t value = 0;
+			return bpf_map_lookup_elem(fd, &index, &value) == 0 ? value : 0;
+		};
+		int traffic = obj_->map_fd("traffic");
+		int sampled = obj_->map_fd("sample_drops");
+		signals.raw_events = counter(traffic, 0);
+		signals.ringbuf_drops = counter(traffic, 2);
+		signals.sampled_drops = counter(sampled, 0);
+		auto runtime = obj_->runtime_stats();
+		signals.bpf_run_time_ns = runtime.run_time_ns;
+		signals.bpf_run_cnt = runtime.run_cnt;
+	}
+
+	auto limit = max_events_.load();
+	size_t pending = 0;
+	{
+		std::lock_guard lock(ev_mu_);
+		pending = pending_.size();
+	}
+	signals.queue_saturation = limit == 0 ? 0 : static_cast<double>(pending) / limit;
 	return signals;
 }
 
-void Source::apply_policy(const policy::Decision& decision) {
-	if (!obj_) {
-		return;
-	}
-	auto events = std::max(1u, decision.max_events_per_interval);
-	auto sample = std::min(100u, decision.sample_percent);
-	auto depth = std::clamp(decision.unwind_depth, 1u, static_cast<uint32_t>(policy::kMaxUnwindDepth));
-	max_events_.store(events);
-	sample_percent_.store(sample);
-	unwind_depth_.store(depth);
-	event_limit_.Set(static_cast<double>(events));
-	event_sample_.Set(static_cast<double>(sample));
-	unwind_depth_gauge_.Set(static_cast<double>(depth));
+policy::ApplyResult Source::apply_policy(const policy::Decision& decision) {
+	policy::ApplyResult result{true, decision};
+	result.actual.max_events_per_interval = std::max(1u, decision.max_events_per_interval);
+	result.actual.sample_percent = std::min(100u, decision.sample_percent);
+	result.actual.unwind_depth =
+	        std::clamp(decision.unwind_depth, 1u, static_cast<uint32_t>(policy::kMaxUnwindDepth));
 
-	if (dwarf_loaded_ && !decision.unwind_mode.empty()) {
-		int mode = decision.unwind_mode == kUnwindFramePointer ? 1 : 0;
-		struct {
-			uint32_t depth;
-			uint32_t mode;
-		} config{depth, static_cast<uint32_t>(mode)};
-		uint32_t zero = 0;
-		if (bpf_map_update_elem(obj_->map_fd("unwind_config"), &zero, &config, BPF_ANY) != 0) {
-			log_.warn("apply unwind policy failed", {{"err", std::strerror(errno)}});
-		} else {
-			auto previous = active_unwind_mode_.exchange(mode == 0 ? 1 : 2);
-			if (previous != 0 && previous != (mode == 0 ? 1 : 2)) {
-				unwinder_mode_.Add({{"mode", previous == 1 ? kUnwindDwarf : kUnwindFramePointer}})
-				        .Set(0);
-				unwinder_mode_.Add({{"mode", mode == 0 ? kUnwindDwarf : kUnwindFramePointer}}).Set(1);
-			}
-		}
+	auto old_sample = sample_percent_.load();
+	uint32_t zero = 0;
+	if (obj_ &&
+	    bpf_map_update_elem(obj_->map_fd("sample_percent"), &zero, &result.actual.sample_percent, BPF_ANY) != 0) {
+		result.actual.sample_percent = old_sample;
+		result.success = false;
+		log_.warn("apply sample policy failed", {{"err", std::strerror(errno)}});
+	} else {
+		sample_percent_.store(result.actual.sample_percent);
 	}
+
+	max_events_.store(result.actual.max_events_per_interval);
+	unwind_depth_.store(result.actual.unwind_depth);
+	event_limit_.Set(static_cast<double>(result.actual.max_events_per_interval));
+	event_sample_.Set(static_cast<double>(result.actual.sample_percent));
+	unwind_depth_gauge_.Set(static_cast<double>(result.actual.unwind_depth));
+
+	auto active = active_unwind_mode_.load();
+	std::string active_mode = active == 1 ? kUnwindDwarf : kUnwindFramePointer;
+	if (decision.unwind_mode.empty()) {
+		result.actual.unwind_mode = active_mode;
+		return result;
+	}
+	if (!dwarf_loaded_) {
+		result.actual.unwind_mode = active_mode;
+		if (decision.unwind_mode != active_mode) {
+			result.success = false;
+		}
+		return result;
+	}
+	int desired = decision.unwind_mode == kUnwindFramePointer ? 1 : 0;
+	struct {
+		uint32_t depth;
+		uint32_t mode;
+	} config{result.actual.unwind_depth, static_cast<uint32_t>(desired)};
+	if (bpf_map_update_elem(obj_->map_fd("unwind_config"), &zero, &config, BPF_ANY) != 0) {
+		result.actual.unwind_depth = unwind_depth_.load();
+		result.actual.unwind_mode = active_mode;
+		result.success = false;
+		log_.warn("apply unwind policy failed", {{"err", std::strerror(errno)}});
+		return result;
+	}
+	auto previous = active_unwind_mode_.exchange(desired == 0 ? 1 : 2);
+	if (previous != 0 && previous != (desired == 0 ? 1 : 2)) {
+		unwinder_mode_.Add({{"mode", previous == 1 ? kUnwindDwarf : kUnwindFramePointer}}).Set(0);
+		unwinder_mode_.Add({{"mode", desired == 0 ? kUnwindDwarf : kUnwindFramePointer}}).Set(1);
+	}
+	result.actual.unwind_mode = desired == 0 ? kUnwindDwarf : kUnwindFramePointer;
+	return result;
 }
 
 void Source::close() {

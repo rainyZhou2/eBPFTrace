@@ -77,7 +77,7 @@ private:
 	void report_drops();
 	void close_locked();
 	policy::Signals policy_signals();
-	void apply_policy(const policy::Decision& decision);
+	policy::ApplyResult apply_policy(const policy::Decision& decision);
 	uint64_t bpf_drop_count() const;
 	uint32_t process_count() const;
 	static int on_event(void* ctx, void* data, size_t size);
@@ -130,7 +130,8 @@ private:
 	std::atomic<int> active_unwind_mode_{0};
 	bool dwarf_loaded_ = false;
 	std::atomic<uint64_t> policy_events_{0};
-	std::atomic<uint64_t> policy_dropped_{0};
+	std::atomic<uint64_t> policy_capacity_drops_{0};
+	std::atomic<uint64_t> policy_decode_drops_{0};
 	std::unique_ptr<policy::Controller> policy_;
 	std::jthread policy_thread_;
 	prometheus::Gauge& event_limit_;

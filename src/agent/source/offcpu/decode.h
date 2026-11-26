@@ -102,7 +102,8 @@ struct RawStart {
 	uint8_t reason;
 	uint8_t has_trace;
 	uint8_t in_gpu;
-	uint8_t pad[5];
+	uint8_t sampled;
+	uint8_t pad[4];
 };
 
 struct RawStack {
@@ -136,7 +137,8 @@ struct RawGpuWait {
 	uint8_t has_trace;
 	uint8_t has_chain;
 	uint8_t argkind;
-	uint8_t pad[7];
+	uint8_t sampled;
+	uint8_t pad[6];
 	RawChain chain;
 };
 

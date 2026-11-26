@@ -168,7 +168,16 @@ CUDA 驱动默认调度下，等待 GPU 的线程会在 CPU 上自旋，不进�
 
 ### 自适应采集
 
-`policy.enabled` 为 true 时，off-CPU source 会运行 `agent/policy` 控制器。控制器按周期采样 BPF drop 计数、agent CPU 时间、已接收事件速率、进程数和当前 unwind 模式；在 CPU、drop、事件速率或进程数超阈值时，降低 `max_events_per_interval`、栈深度和未带 trace 的事件采样率；在 `cooldown` 内持续有余量后再恢复。加载 DWARF 的 source 还能切到 frame pointer；只加载 frame pointer 的 source 不能切回 DWARF。带 trace 的事件不会被采样。控制器只通过窄适配器修改采集参数，BPF、processor 和 exporter 保持各自契约。`configs/agent.yaml` 默认用保守阈值启用；保持 `policy.enabled: false` 即使用静态限制。
+`policy.enabled` 为 true 时，off-CPU source 会运行 `agent/policy` 控制器。控制器按周期采样 BPF drop 计数、BPF `run_time_ns`/`run_cnt`、原始等待速率、已接收事件速率、Ring Buffer drop、用户态队列饱和度、agent CPU 时间、进程数和当前 unwind 模式。在 CPU、BPF 运行时间、drop、原始速率、Ring Buffer、队列或进程数超阈值时，降低 `max_events_per_interval`、栈深度和未带 trace 的事件采样率；在 `cooldown` 内持续有余量后再恢复。已接收速率和策略主动采样丢弃不计入压力信号，避免“降采样后误判压力消失”的振荡。加载 DWARF 的 source 还能切到 frame pointer；只加载 frame pointer 的 source 不能切回 DWARF。带 trace 的事件不会被采样。
+
+采样在等待开始时决定，并写入等待记录，因此同一次等待会整体保留或整体跳过，而不是在结束事件上独立随机决定。未采样的未带 trace 等待会在进入 Ring Buffer 前跳过用户栈回溯和事件提交；内核栈仍会采集，以保持聚合计数完整。控制器只有在 source 返回实际生效状态后才提交新状态，失败会在下一个周期重试。控制器只通过窄适配器修改采集参数，BPF、processor 和 exporter 保持各自契约。`configs/agent.yaml` 默认用保守阈值启用；保持 `policy.enabled: false` 即使用静态限制。
+
+BPF 运行统计需要 `kernel.bpf_stats_enabled=1`；未开启时运行时间信号为 0，控制器回退到其他输入。该开关会让内核为每次程序执行记账，只建议诊断时开启：
+
+```sh
+sudo sysctl -w kernel.bpf_stats_enabled=1
+sudo bpftool prog show
+```
 
 ## 架构
 

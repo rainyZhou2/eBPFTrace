@@ -54,6 +54,43 @@ TEST(Policy, ReducesLimitsUnderDropAndProcessPressure) {
 	EXPECT_EQ(next.sample_percent, 75u);
 }
 
+TEST(Policy, ReadsBpfAndQueuePressure) {
+	agent::policy::Planner planner(config());
+	agent::policy::Signals previous;
+	agent::policy::Signals current;
+
+	auto bpf = current;
+	bpf.bpf_run_time_ns = 1'000'000'000;
+	EXPECT_EQ(planner.decide(previous, bpf, 1s, decision()).sample_percent, 75u);
+
+	auto ring = current;
+	ring.ringbuf_drops = 1;
+	EXPECT_EQ(planner.decide(previous, ring, 1s, decision()).sample_percent, 75u);
+
+	auto queue = current;
+	queue.queue_saturation = 1;
+	EXPECT_EQ(planner.decide(previous, queue, 1s, decision()).sample_percent, 75u);
+
+	auto capacity = current;
+	capacity.capacity_drops = 1;
+	EXPECT_EQ(planner.decide(previous, capacity, 1s, decision()).sample_percent, 75u);
+}
+
+TEST(Policy, IgnoresAcceptedRateAndActiveSamplingDrops) {
+	agent::policy::Planner planner(config());
+	agent::policy::Signals previous;
+	agent::policy::Signals current;
+	current.events = 100'000;
+	current.sampled_drops = 100'000;
+	current.events_dropped = 100'000;
+	auto steady = agent::policy::Decision{20000, 64, 100, "dwarf"};
+	auto next = planner.decide(previous, current, 1s, steady);
+	EXPECT_EQ(next.max_events_per_interval, steady.max_events_per_interval);
+	EXPECT_EQ(next.unwind_depth, steady.unwind_depth);
+	EXPECT_EQ(next.sample_percent, steady.sample_percent);
+	EXPECT_EQ(next.unwind_mode, steady.unwind_mode);
+}
+
 TEST(Policy, RaisesLimitsWhenThereIsHeadroom) {
 	agent::policy::Planner planner(config());
 	agent::policy::Signals previous;

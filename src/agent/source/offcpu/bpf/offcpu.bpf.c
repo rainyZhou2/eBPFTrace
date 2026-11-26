@@ -109,7 +109,8 @@ struct start_rec {
 	__u8 reason;
 	__u8 has_trace;
 	__u8 in_gpu;
-	__u8 _pad[5];
+	__u8 sampled;
+	__u8 _pad[4];
 };
 
 /* A thread inside a host-blocking CUDA call. Off-CPU intervals that start
@@ -128,7 +129,8 @@ struct gpu_wait {
 	__u8 has_trace;
 	__u8 has_chain;
 	__u8 argkind;
-	__u8 _pad[7];
+	__u8 sampled;
+	__u8 _pad[6];
 	struct chain chain;
 };
 
@@ -296,6 +298,9 @@ DEFINE_MAP(kernel_names, BPF_MAP_TYPE_LRU_HASH, struct handle_key, struct kernel
 DEFINE_MAP(launch_hits, BPF_MAP_TYPE_PERCPU_ARRAY, __u32, __u64, 1);
 DEFINE_MAP(launch_scope, BPF_MAP_TYPE_LRU_HASH, __u32, struct launch_scope, 65536);
 DEFINE_MAP(drops, BPF_MAP_TYPE_ARRAY, __u32, __u64, 8);
+DEFINE_MAP(sample_drops, BPF_MAP_TYPE_ARRAY, __u32, __u64, 1);
+DEFINE_MAP(traffic, BPF_MAP_TYPE_ARRAY, __u32, __u64, 3);
+DEFINE_MAP(sample_percent, BPF_MAP_TYPE_ARRAY, __u32, __u32, 1);
 DEFINE_MAP(generation, BPF_MAP_TYPE_ARRAY, __u32, __u32, 1);
 
 struct {
@@ -377,6 +382,30 @@ static __always_inline __u64 mix(__u64 h, __u64 v)
 	h ^= v;
 	h *= 0x100000001b3ULL;
 	return h;
+}
+
+static __always_inline void count_traffic(__u32 slot)
+{
+	__u64 *v = bpf_map_lookup_elem(&traffic, &slot);
+	if (v)
+		__sync_fetch_and_add(v, 1);
+}
+
+static __always_inline bool sample_now(__u32 pid, __u64 now)
+{
+	__u32 zero = 0;
+	__u32 *percent = bpf_map_lookup_elem(&sample_percent, &zero);
+	if (!percent || *percent >= 100)
+		return true;
+	return mix(now, (__u64)pid) % 100 < *percent;
+}
+
+static __always_inline void record_sample_drop(void)
+{
+	__u32 zero = 0;
+	__u64 *v = bpf_map_lookup_elem(&sample_drops, &zero);
+	if (v)
+		__sync_fetch_and_add(v, 1);
 }
 
 /* Stores the stack held in the per-CPU scratch slot under its content hash. */
@@ -804,7 +833,7 @@ int BPF_PROG(on_waking, struct task_struct *p)
 
 	__u32 wakee = p->pid;
 	struct start_rec *start = bpf_map_lookup_elem(&starts, &wakee);
-	if (!start || start->reason != REASON_BLOCKED || start->tgid != p->tgid)
+	if (!start || start->reason != REASON_BLOCKED || start->tgid != p->tgid || !start->sampled)
 		return 0;
 	__u64 wakee_start = start->ts;
 
@@ -904,8 +933,10 @@ static __always_inline void accumulate(struct offcpu_key *key, __u64 delta, stru
 static __always_inline void emit_event(__u64 start_ns, struct trace_ctx *trace, struct offcpu_key *key, __u64 now,
 				       struct chain *c, __u64 stream, __u32 launches)
 {
+	count_traffic(1);
 	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) {
+		count_traffic(2);
 		record_drop(DROP_EVENT);
 		return;
 	}
@@ -955,6 +986,7 @@ static __always_inline void on_block(void *ctx, struct task_struct *prev, __u64 
 		return;
 
 	__u32 pid = prev->pid;
+	count_traffic(0);
 	struct start_rec rec = {
 		.ts = now,
 		.tgid = prev->tgid,
@@ -962,10 +994,13 @@ static __always_inline void on_block(void *ctx, struct task_struct *prev, __u64 
 	};
 	struct gpu_wait *w = bpf_map_lookup_elem(&gpu_waits, &pid);
 	rec.in_gpu = w && w->tgid == rec.tgid && now >= w->ts && now - w->ts < GPU_WAIT_TIMEOUT_NS;
-	rec.kstack = capture_stack(ctx, 0);
-	if (capture_user_stacks)
-		rec.ustack = capture_user_stack(ctx);
 	rec.has_trace = read_trace(pid, rec.tgid, &rec.trace);
+	rec.sampled = rec.has_trace || sample_now(pid, now);
+	if (!rec.sampled)
+		record_sample_drop();
+	rec.kstack = capture_stack(ctx, 0);
+	if (capture_user_stacks && rec.sampled)
+		rec.ustack = capture_user_stack(ctx);
 	if (bpf_map_update_elem(&starts, &pid, &rec, BPF_ANY))
 		record_drop(DROP_START);
 }
@@ -1027,7 +1062,7 @@ static __always_inline void on_resume(struct task_struct *next, __u64 now)
 	intern_chain(&key, c);
 	accumulate(&key, delta, key.chain_id ? c : NULL);
 
-	if ((emit_traced_events && start->has_trace) || (slow_event_ns && delta >= slow_event_ns))
+	if (start->sampled && ((emit_traced_events && start->has_trace) || (slow_event_ns && delta >= slow_event_ns)))
 		emit_event(start->ts, start->has_trace ? &start->trace : NULL, &key, now, c, 0, 0);
 
 out:
@@ -1078,6 +1113,7 @@ int on_gpu_enter(void *ctx)
 		return 0;
 	__u64 cookie = bpf_get_attach_cookie(ctx);
 	__builtin_memset(w, 0, sizeof(*w));
+	count_traffic(0);
 	w->ts = now;
 	w->sp = sp;
 	w->tgid = cur->tgid;
@@ -1085,8 +1121,11 @@ int on_gpu_enter(void *ctx)
 	w->argkind = (__u8)(cookie >> 8);
 	w->obj = w->argkind != GPU_ARG_NONE ? uprobe_arg(ctx, 0) : 0;
 	w->depth = 1;
-	w->ustack = capture_user_stacks ? capture_user_stack(ctx) : 0;
 	w->has_trace = read_trace(tid, w->tgid, &w->trace);
+	w->sampled = w->has_trace || sample_now(tid, now);
+	if (!w->sampled)
+		record_sample_drop();
+	w->ustack = capture_user_stacks && w->sampled ? capture_user_stack(ctx) : 0;
 	if (bpf_map_update_elem(&gpu_waits, &tid, w, BPF_ANY))
 		record_drop(DROP_GPU);
 	return 0;
@@ -1182,7 +1221,8 @@ int on_gpu_exit(void *ctx)
 	struct chain *c = w->has_chain ? &w->chain : NULL;
 	intern_chain(&key, c);
 	accumulate(&key, delta, key.chain_id ? c : NULL);
-	if ((emit_traced_events && w->has_trace) || (slow_event_ns && delta >= slow_event_ns))
+	if (w->sampled &&
+	    ((emit_traced_events && w->has_trace) || (slow_event_ns && delta >= slow_event_ns)))
 		emit_event(w->ts, w->has_trace ? &w->trace : NULL, &key, now, c, stream, launches);
 out:
 	bpf_map_delete_elem(&gpu_waits, &tid);

@@ -52,6 +52,14 @@ public:
 	// tail of the verifier log.
 	void load();
 
+	// runtime_stats sums run_time_ns and run_cnt across loaded programs.
+	// Both are zero when kernel.bpf_stats_enabled is off.
+	struct RuntimeStats {
+		uint64_t run_time_ns = 0;
+		uint64_t run_cnt = 0;
+	};
+	RuntimeStats runtime_stats() const;
+
 	bpf_map* map(const std::string& name) const;
 	int map_fd(const std::string& name) const { return bpf_map__fd(map(name)); }
 	bpf_program* program(const std::string& name) const;
